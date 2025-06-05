@@ -7,7 +7,6 @@ import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
 from sklearn.model_selection import GridSearchCV, cross_val_score, StratifiedKFold
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score, 
@@ -23,11 +22,25 @@ warnings.filterwarnings('ignore')
 # Ajouter le dossier parent au path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from config.config import (
-    FEATURES_DATA_DIR, PROCESSED_DATA_DIR, MODELS_DIR,
-    RF_PARAM_GRID, XGB_PARAM_GRID, LR_PARAM_GRID,
-    RANDOM_STATE, CV_FOLDS, PRIMARY_METRIC, LOGGER
-)
+# Imports avec gestion d'erreur
+try:
+    from config.config import (
+        PROCESSED_DATA_DIR, MODELS_DIR, RANDOM_STATE, 
+        CV_FOLDS, PRIMARY_METRIC, LOGGER
+    )
+except ImportError:
+    # Configuration de base si config.py incomplet
+    PROCESSED_DATA_DIR = Path("data/processed")
+    MODELS_DIR = Path("models")
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    
+    RANDOM_STATE = 42
+    CV_FOLDS = 5
+    PRIMARY_METRIC = 'roc_auc'
+    
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    LOGGER = logging.getLogger(__name__)
 
 class CSGOModelTrainer:
     """Classe pour l'entraînement et l'évaluation des modèles CS:GO"""
@@ -51,62 +64,38 @@ class CSGOModelTrainer:
             ),
             'random_forest': RandomForestClassifier(
                 random_state=RANDOM_STATE,
-                n_jobs=-1
+                n_jobs=-1,
+                n_estimators=100
             ),
             'xgboost': xgb.XGBClassifier(
                 random_state=RANDOM_STATE,
-                eval_metric='logloss'
+                eval_metric='logloss',
+                verbosity=0
             ),
             'gradient_boosting': GradientBoostingClassifier(
-                random_state=RANDOM_STATE
-            ),
-            'svm': SVC(
                 random_state=RANDOM_STATE,
-                probability=True  # Pour ROC-AUC
+                n_estimators=100
             )
         }
         
         LOGGER.info(f"🤖 {len(self.models)} modèles initialisés")
     
-    def load_data(self, data_type='engineered'):
+    def load_data(self):
         """
         Charge les données pour l'entraînement
         
-        Args:
-            data_type: 'processed', 'engineered', ou 'pca'
-            
         Returns:
             Tuple (X_train, X_val, X_test, y_train, y_val, y_test)
         """
         try:
-            if data_type == 'engineered':
-                data_dir = FEATURES_DATA_DIR
-                X_train = pd.read_csv(data_dir / "X_train_engineered.csv")
-                X_val = pd.read_csv(data_dir / "X_val_engineered.csv")
-                X_test = pd.read_csv(data_dir / "X_test_engineered.csv")
-                y_train = pd.read_csv(data_dir / "y_train_engineered.csv").iloc[:, 0]
-                y_val = pd.read_csv(data_dir / "y_val_engineered.csv").iloc[:, 0]
-                y_test = pd.read_csv(data_dir / "y_test_engineered.csv").iloc[:, 0]
+            X_train = pd.read_csv(PROCESSED_DATA_DIR / "X_train.csv")
+            X_val = pd.read_csv(PROCESSED_DATA_DIR / "X_val.csv")
+            X_test = pd.read_csv(PROCESSED_DATA_DIR / "X_test.csv")
+            y_train = pd.read_csv(PROCESSED_DATA_DIR / "y_train.csv").iloc[:, 0]
+            y_val = pd.read_csv(PROCESSED_DATA_DIR / "y_val.csv").iloc[:, 0]
+            y_test = pd.read_csv(PROCESSED_DATA_DIR / "y_test.csv").iloc[:, 0]
             
-            elif data_type == 'pca':
-                data_dir = FEATURES_DATA_DIR
-                X_train = pd.read_csv(data_dir / "X_train_pca.csv")
-                X_val = pd.read_csv(data_dir / "X_val_pca.csv")
-                X_test = pd.read_csv(data_dir / "X_test_pca.csv")
-                y_train = pd.read_csv(data_dir / "y_train_engineered.csv").iloc[:, 0]
-                y_val = pd.read_csv(data_dir / "y_val_engineered.csv").iloc[:, 0]
-                y_test = pd.read_csv(data_dir / "y_test_engineered.csv").iloc[:, 0]
-            
-            else:  # processed
-                data_dir = PROCESSED_DATA_DIR
-                X_train = pd.read_csv(data_dir / "X_train.csv")
-                X_val = pd.read_csv(data_dir / "X_val.csv")
-                X_test = pd.read_csv(data_dir / "X_test.csv")
-                y_train = pd.read_csv(data_dir / "y_train.csv").iloc[:, 0]
-                y_val = pd.read_csv(data_dir / "y_val.csv").iloc[:, 0]
-                y_test = pd.read_csv(data_dir / "y_test.csv").iloc[:, 0]
-            
-            LOGGER.info(f"📁 Données {data_type} chargées:")
+            LOGGER.info(f"📁 Données chargées:")
             LOGGER.info(f"  Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
             LOGGER.info(f"  Features: {X_train.shape[1]}")
             
@@ -114,19 +103,12 @@ class CSGOModelTrainer:
             
         except FileNotFoundError as e:
             LOGGER.error(f"❌ Fichier non trouvé: {e}")
-            LOGGER.info("💡 Lancez d'abord les étapes de preprocessing/feature engineering")
+            LOGGER.info("💡 Lancez d'abord data_preprocessing.py")
             raise
     
     def train_baseline_models(self, X_train, X_val, y_train, y_val):
         """
         Entraîne tous les modèles avec paramètres par défaut
-        
-        Args:
-            X_train, X_val: Features d'entraînement et validation
-            y_train, y_val: Labels d'entraînement et validation
-            
-        Returns:
-            Dict avec les résultats de tous les modèles
         """
         LOGGER.info("🚀 Entraînement des modèles baseline...")
         
@@ -148,6 +130,7 @@ class CSGOModelTrainer:
                     y_train_proba = model.predict_proba(X_train)[:, 1]
                     y_val_proba = model.predict_proba(X_val)[:, 1]
                 else:
+                    # Pour les modèles sans predict_proba
                     y_train_proba = model.decision_function(X_train)
                     y_val_proba = model.decision_function(X_val)
                 
@@ -189,23 +172,16 @@ class CSGOModelTrainer:
         """Calcule toutes les métriques de classification"""
         metrics = {
             'accuracy': accuracy_score(y_true, y_pred),
-            'precision': precision_score(y_true, y_pred, average='weighted'),
-            'recall': recall_score(y_true, y_pred, average='weighted'),
-            'f1': f1_score(y_true, y_pred, average='weighted'),
+            'precision': precision_score(y_true, y_pred, average='weighted', zero_division=0),
+            'recall': recall_score(y_true, y_pred, average='weighted', zero_division=0),
+            'f1': f1_score(y_true, y_pred, average='weighted', zero_division=0),
             'roc_auc': roc_auc_score(y_true, y_proba)
         }
         return metrics
     
-    def hyperparameter_tuning(self, X_train, y_train, top_models=3):
+    def hyperparameter_tuning(self, X_train, y_train, top_models=2):
         """
         Optimise les hyperparamètres des meilleurs modèles
-        
-        Args:
-            X_train, y_train: Données d'entraînement
-            top_models: Nombre de modèles à optimiser
-            
-        Returns:
-            Dict avec les modèles optimisés
         """
         LOGGER.info(f"🔧 Optimisation des hyperparamètres (top {top_models} modèles)...")
         
@@ -271,18 +247,24 @@ class CSGOModelTrainer:
     def _get_param_grid(self, model_name):
         """Retourne la grille de paramètres pour un modèle"""
         param_grids = {
-            'random_forest': RF_PARAM_GRID,
-            'xgboost': XGB_PARAM_GRID,
-            'logistic_regression': LR_PARAM_GRID,
+            'random_forest': {
+                'n_estimators': [100, 200],
+                'max_depth': [10, 20, None],
+                'min_samples_split': [2, 5]
+            },
+            'xgboost': {
+                'n_estimators': [100, 200],
+                'max_depth': [3, 6],
+                'learning_rate': [0.1, 0.2]
+            },
+            'logistic_regression': {
+                'C': [0.1, 1.0, 10.0],
+                'penalty': ['l2']
+            },
             'gradient_boosting': {
                 'n_estimators': [100, 200],
-                'learning_rate': [0.05, 0.1, 0.2],
-                'max_depth': [3, 5, 7]
-            },
-            'svm': {
-                'C': [0.1, 1, 10],
-                'kernel': ['rbf', 'linear'],
-                'gamma': ['scale', 'auto']
+                'learning_rate': [0.05, 0.1],
+                'max_depth': [3, 5]
             }
         }
         
@@ -292,10 +274,9 @@ class CSGOModelTrainer:
         """Retourne une instance fraîche du modèle"""
         models = {
             'random_forest': RandomForestClassifier(random_state=RANDOM_STATE, n_jobs=-1),
-            'xgboost': xgb.XGBClassifier(random_state=RANDOM_STATE, eval_metric='logloss'),
+            'xgboost': xgb.XGBClassifier(random_state=RANDOM_STATE, eval_metric='logloss', verbosity=0),
             'logistic_regression': LogisticRegression(random_state=RANDOM_STATE, max_iter=1000),
-            'gradient_boosting': GradientBoostingClassifier(random_state=RANDOM_STATE),
-            'svm': SVC(random_state=RANDOM_STATE, probability=True)
+            'gradient_boosting': GradientBoostingClassifier(random_state=RANDOM_STATE)
         }
         
         return models[model_name]
@@ -303,13 +284,6 @@ class CSGOModelTrainer:
     def select_best_model(self, optimized_results, X_val, y_val):
         """
         Sélectionne le meilleur modèle basé sur la performance de validation
-        
-        Args:
-            optimized_results: Résultats des modèles optimisés
-            X_val, y_val: Données de validation
-            
-        Returns:
-            Tuple (nom_meilleur_modèle, modèle, métriques)
         """
         LOGGER.info("🏆 Sélection du meilleur modèle...")
         
@@ -320,7 +294,11 @@ class CSGOModelTrainer:
             
             # Évaluation sur validation
             y_val_pred = model.predict(X_val)
-            y_val_proba = model.predict_proba(X_val)[:, 1] if hasattr(model, 'predict_proba') else model.decision_function(X_val)
+            
+            if hasattr(model, 'predict_proba'):
+                y_val_proba = model.predict_proba(X_val)[:, 1]
+            else:
+                y_val_proba = model.decision_function(X_val)
             
             val_metrics = self._calculate_metrics(y_val, y_val_pred, y_val_proba)
             
@@ -348,13 +326,6 @@ class CSGOModelTrainer:
     def final_evaluation(self, X_test, y_test, model_performances):
         """
         Évaluation finale sur le test set
-        
-        Args:
-            X_test, y_test: Données de test
-            model_performances: Performances des modèles sur validation
-            
-        Returns:
-            Dict avec métriques finales
         """
         LOGGER.info("📊 Évaluation finale sur le test set...")
         
@@ -363,7 +334,11 @@ class CSGOModelTrainer:
         
         # Prédictions sur test
         y_test_pred = self.best_model.predict(X_test)
-        y_test_proba = self.best_model.predict_proba(X_test)[:, 1] if hasattr(self.best_model, 'predict_proba') else self.best_model.decision_function(X_test)
+        
+        if hasattr(self.best_model, 'predict_proba'):
+            y_test_proba = self.best_model.predict_proba(X_test)[:, 1]
+        else:
+            y_test_proba = self.best_model.decision_function(X_test)
         
         # Métriques finales
         test_metrics = self._calculate_metrics(y_test, y_test_pred, y_test_proba)
@@ -435,18 +410,23 @@ class CSGOModelTrainer:
 def main():
     """Fonction principale pour l'entraînement complet"""
     
+    print("🤖 " + "="*50)
+    print("   ENTRAÎNEMENT MODÈLES CS:GO ML")
+    print("   École89 - 2025")
+    print("="*54)
+    
     # Initialisation
     trainer = CSGOModelTrainer()
     
     try:
         # 1. Charger les données
-        X_train, X_val, X_test, y_train, y_val, y_test = trainer.load_data('engineered')
+        X_train, X_val, X_test, y_train, y_val, y_test = trainer.load_data()
         
         # 2. Entraînement baseline
         baseline_results = trainer.train_baseline_models(X_train, X_val, y_train, y_val)
         
         # 3. Optimisation des hyperparamètres
-        optimized_results = trainer.hyperparameter_tuning(X_train, y_train, top_models=3)
+        optimized_results = trainer.hyperparameter_tuning(X_train, y_train, top_models=2)
         
         # 4. Sélection du meilleur modèle
         best_name, best_model, model_performances = trainer.select_best_model(
@@ -470,10 +450,12 @@ def main():
         print(f"🏆 Meilleur modèle: {best_name}")
         print(f"📊 Performance test: {final_results['test_metrics'][PRIMARY_METRIC]:.4f}")
         print(f"💾 Modèle sauvé: {model_path}")
+        print(f"🚀 Prochaine étape: python src/evaluation.py")
         
     except Exception as e:
         LOGGER.error(f"❌ Erreur pendant l'entraînement: {e}")
-        raise
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()

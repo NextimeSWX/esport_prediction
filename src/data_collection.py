@@ -1,9 +1,8 @@
 """
-Module de collecte de données CS:GO via Steam API
+Module de collecte de données CS:GO (Version Simplifiée)
 École89 - 2025
 """
 
-import requests
 import pandas as pd
 import numpy as np
 import time
@@ -12,101 +11,38 @@ from pathlib import Path
 import logging
 from typing import Dict, List, Optional
 import sys
-import os
 
 # Ajouter le dossier parent au path pour les imports
 sys.path.append(str(Path(__file__).parent.parent))
 
-from config.config import (
-    STEAM_API_KEY, STEAM_BASE_URL, CSGO_APP_ID, 
-    RATE_LIMIT_DELAY, MAX_RETRIES, TIMEOUT,
-    CSGO_BASIC_STATS, RAW_DATA_DIR, LOGGER
-)
+try:
+    from config.config import (
+        RAW_DATA_DIR, LOGGER, RANDOM_STATE
+    )
+except ImportError:
+    # Configuration de base si config.py incomplet
+    RAW_DATA_DIR = Path("data/raw")
+    RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    LOGGER = logging.getLogger(__name__)
+    RANDOM_STATE = 42
 
 class CSGODataCollector:
-    """Collecteur de données CS:GO via Steam API"""
+    """Collecteur de données CS:GO avec génération d'exemple"""
     
-    def __init__(self, api_key: str = STEAM_API_KEY):
-        self.api_key = api_key
-        self.base_url = STEAM_BASE_URL
-        self.app_id = CSGO_APP_ID
-        self.session = requests.Session()
+    def __init__(self):
+        self.use_sample_data = True
         self.collected_data = []
-        
-        if not self.api_key or self.api_key == "YOUR_STEAM_API_KEY_HERE":
-            LOGGER.warning("Clé API non configurée - utilisation des données d'exemple")
-            self.use_sample_data = True
-        else:
-            self.use_sample_data = False
-    
-    def get_player_stats(self, steam_id: str) -> Optional[Dict]:
-        """
-        Récupère les statistiques CS:GO d'un joueur
-        
-        Args:
-            steam_id: Steam ID du joueur
-            
-        Returns:
-            Dict contenant les stats du joueur ou None si erreur
-        """
-        if self.use_sample_data:
-            return self._generate_sample_player_stats(steam_id)
-        
-        url = f"{self.base_url}/ISteamUserStats/GetUserStatsForGame/v0002/"
-        params = {
-            'appid': self.app_id,
-            'key': self.api_key,
-            'steamid': steam_id
-        }
-        
-        for attempt in range(MAX_RETRIES):
-            try:
-                response = self.session.get(url, params=params, timeout=TIMEOUT)
-                response.raise_for_status()
-                
-                data = response.json()
-                
-                if 'playerstats' in data and 'stats' in data['playerstats']:
-                    time.sleep(RATE_LIMIT_DELAY)
-                    return self._parse_player_stats(data['playerstats'], steam_id)
-                else:
-                    LOGGER.warning(f"Pas de stats CS:GO pour {steam_id}")
-                    return None
-                    
-            except requests.exceptions.RequestException as e:
-                LOGGER.error(f"Tentative {attempt + 1} échouée pour {steam_id}: {e}")
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(2 ** attempt)  # Backoff exponentiel
-                else:
-                    return None
-        
-        return None
-    
-    def _parse_player_stats(self, playerstats: Dict, steam_id: str) -> Dict:
-        """Parse les statistiques brutes d'un joueur"""
-        stats_dict = {'steam_id': steam_id}
-        
-        # Convertir la liste de stats en dictionnaire
-        for stat in playerstats.get('stats', []):
-            stat_name = stat.get('name')
-            stat_value = stat.get('value', 0)
-            
-            if stat_name in CSGO_BASIC_STATS:
-                stats_dict[stat_name] = stat_value
-        
-        # Ajouter des valeurs par défaut pour les stats manquantes
-        for stat_name in CSGO_BASIC_STATS:
-            if stat_name not in stats_dict:
-                stats_dict[stat_name] = 0
-        
-        return stats_dict
+        LOGGER.info("🎮 Collecteur CS:GO initialisé (mode données d'exemple)")
     
     def _generate_sample_player_stats(self, steam_id: str) -> Dict:
         """
         Génère des statistiques d'exemple réalistes pour CS:GO
-        Utilisé quand l'API n'est pas disponible
         """
-        np.random.seed(hash(steam_id) % 2**32)  # Seed basé sur steam_id pour cohérence
+        # Seed basé sur steam_id pour cohérence
+        np.random.seed(hash(steam_id) % 2**32)
         
         # Niveau de skill simulé (0.1 à 0.9)
         skill_level = np.random.uniform(0.2, 0.8)
@@ -122,7 +58,7 @@ class CSGODataCollector:
         # Stats de base corrélées au skill
         base_kd = 0.7 + skill_level * 0.6  # KD entre 0.7 et 1.3
         total_kills = int(rounds_played * base_kd * np.random.uniform(0.8, 1.2))
-        total_deaths = int(total_kills / base_kd)
+        total_deaths = max(1, int(total_kills / base_kd))
         
         # Stats d'armes (répartition réaliste)
         weapon_kills = self._distribute_weapon_kills(total_kills, skill_level)
@@ -212,23 +148,17 @@ class CSGODataCollector:
         LOGGER.info(f"Collecte des données pour {len(steam_ids)} joueurs...")
         
         for i, steam_id in enumerate(steam_ids):
-            LOGGER.info(f"Collecte {i+1}/{len(steam_ids)}: {steam_id}")
+            if (i + 1) % 50 == 0:  # Log tous les 50 joueurs
+                LOGGER.info(f"Progression: {i+1}/{len(steam_ids)} joueurs")
             
-            player_stats = self.get_player_stats(steam_id)
-            if player_stats:
-                all_stats.append(player_stats)
-            else:
-                LOGGER.warning(f"Échec collecte pour {steam_id}")
+            player_stats = self._generate_sample_player_stats(steam_id)
+            all_stats.append(player_stats)
         
-        if all_stats:
-            df = pd.DataFrame(all_stats)
-            LOGGER.info(f"✅ Collecte terminée: {len(df)} joueurs")
-            return df
-        else:
-            LOGGER.error("❌ Aucune donnée collectée!")
-            return pd.DataFrame()
+        df = pd.DataFrame(all_stats)
+        LOGGER.info(f"✅ Collecte terminée: {len(df)} joueurs")
+        return df
     
-    def generate_sample_dataset(self, n_players: int = 500) -> pd.DataFrame:
+    def generate_sample_dataset(self, n_players: int = 800) -> pd.DataFrame:
         """
         Génère un dataset d'exemple avec n joueurs
         
@@ -238,16 +168,15 @@ class CSGODataCollector:
         Returns:
             DataFrame avec les données d'exemple
         """
-        LOGGER.info(f"Génération d'un dataset d'exemple avec {n_players} joueurs...")
+        LOGGER.info(f"🎮 Génération d'un dataset CS:GO avec {n_players} joueurs...")
         
-        # Génération de Steam IDs fictifs
+        # Génération de Steam IDs fictifs mais réalistes
         steam_ids = [f"76561198{str(i).zfill(9)}" for i in range(n_players)]
         
-        # Collecte des données (qui seront générées)
-        self.use_sample_data = True
+        # Collecte des données
         df = self.collect_multiple_players(steam_ids)
         
-        # Ajout d'une variable cible simulée (performance élevée = plus de victoires)
+        # Ajout d'une variable cible simulée
         if not df.empty:
             df = self._add_target_variable(df)
         
@@ -271,7 +200,12 @@ class CSGODataCollector:
         threshold = performance_score.quantile(0.6)
         df['high_performer'] = (performance_score > threshold).astype(int)
         
-        LOGGER.info(f"Variable cible créée - {df['high_performer'].sum()} high performers sur {len(df)}")
+        # Ajouter quelques stats dérivées utiles
+        df['hours_played'] = df['total_time_played'] / 3600
+        df['damage_per_round'] = df['total_damage_done'] / (df['total_rounds_played'] + 1)
+        df['mvp_rate'] = df['total_mvps'] / (df['total_matches_played'] + 1)
+        
+        LOGGER.info(f"🎯 Variable cible créée - {df['high_performer'].sum()} high performers sur {len(df)} ({df['high_performer'].mean():.1%})")
         
         return df
     
@@ -283,28 +217,61 @@ class CSGODataCollector:
         return filepath
 
 def main():
-    """Fonction principale pour tester la collecte"""
-    collector = CSGODataCollector()
+    """Fonction principale pour générer le dataset"""
+    print("🎮 " + "="*50)
+    print("   GÉNÉRATION DATASET CS:GO")
+    print("   École89 - 2025")
+    print("="*54)
     
-    # Génération d'un dataset d'exemple
-    df = collector.generate_sample_dataset(n_players=800)
+    try:
+        # Initialiser le collecteur
+        collector = CSGODataCollector()
+        
+        # Génération d'un dataset d'exemple
+        df = collector.generate_sample_dataset(n_players=800)
+        
+        if not df.empty:
+            # Sauvegarde
+            filepath = collector.save_raw_data(df)
+            
+            # Statistiques du dataset
+            print(f"\n📊 STATISTIQUES DU DATASET:")
+            print(f"   Joueurs générés: {len(df)}")
+            print(f"   Variables: {len(df.columns)}")
+            print(f"   High performers: {df['high_performer'].sum()} ({df['high_performer'].mean():.1%})")
+            
+            # Statistiques de performance
+            print(f"\n🏆 STATISTIQUES DE PERFORMANCE:")
+            high_perf = df[df['high_performer'] == 1]
+            low_perf = df[df['high_performer'] == 0]
+            
+            print(f"   KD Ratio moyen:")
+            print(f"     High performers: {high_perf['kd_ratio'].mean():.2f}")
+            print(f"     Low performers:  {low_perf['kd_ratio'].mean():.2f}")
+            
+            print(f"   Accuracy moyenne:")
+            print(f"     High performers: {high_perf['accuracy'].mean():.1%}")
+            print(f"     Low performers:  {low_perf['accuracy'].mean():.1%}")
+            
+            print(f"   Heures jouées moyenne:")
+            print(f"     High performers: {high_perf['hours_played'].mean():.0f}h")
+            print(f"     Low performers:  {low_perf['hours_played'].mean():.0f}h")
+            
+            # Aperçu des données
+            print(f"\n📋 APERÇU DES DONNÉES:")
+            print(df[['steam_id', 'total_kills', 'total_deaths', 'kd_ratio', 'accuracy', 'high_performer']].head())
+            
+            print(f"\n✅ GÉNÉRATION TERMINÉE!")
+            print(f"💾 Fichier: {filepath}")
+            print(f"🚀 Prochaine étape: python src/data_preprocessing.py")
+        
+        else:
+            print("❌ Échec de la génération du dataset")
     
-    if not df.empty:
-        # Sauvegarde
-        collector.save_raw_data(df)
-        
-        # Statistiques de base
-        print("\n=== STATISTIQUES DU DATASET ===")
-        print(f"Nombre de joueurs: {len(df)}")
-        print(f"Nombre de features: {len(df.columns)}")
-        print(f"\nDistribution de la variable cible:")
-        print(df['high_performer'].value_counts())
-        
-        print(f"\nPremières lignes:")
-        print(df.head())
-        
-    else:
-        print("❌ Échec de la génération du dataset")
+    except Exception as e:
+        LOGGER.error(f"❌ Erreur pendant la génération: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
