@@ -20,7 +20,34 @@ from pathlib import Path
 # Ajouter le dossier src au path
 sys.path.append(str(Path(__file__).parent / "src"))
 
-from config.config import LOGGER, check_steam_api_key, create_project_structure
+# Imports avec gestion d'erreur
+try:
+    from config.config import LOGGER, check_steam_api_key
+except ImportError:
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    LOGGER = logging.getLogger(__name__)
+    
+    def check_steam_api_key():
+        LOGGER.info("⚠️ Configuration API Steam non disponible - Mode données d'exemple")
+        return False
+
+def create_project_structure():
+    """Crée la structure de dossiers du projet"""
+    directories = [
+        Path("data"),
+        Path("data/raw"),
+        Path("data/processed"), 
+        Path("data/features"),
+        Path("models"),
+        Path("notebooks")
+    ]
+    
+    for directory in directories:
+        directory.mkdir(parents=True, exist_ok=True)
+    
+    LOGGER.info("📁 Structure de projet vérifiée/créée")
+    return True
 
 def main():
     """Point d'entrée principal"""
@@ -52,7 +79,7 @@ Exemples:
     parser.add_argument(
         '--steps', 
         type=str, 
-        default='collect,preprocess,features,model,evaluate',
+        default='collect,preprocess,model,evaluate',
         help='Étapes à exécuter (séparées par des virgules)'
     )
     
@@ -125,23 +152,44 @@ def execute_pipeline(steps, data_size, quick_mode):
     if 'collect' in steps:
         LOGGER.info("📡 Étape 1: Collecte des données...")
         
-        from data_collection import CSGODataCollector
-        
-        collector = CSGODataCollector()
-        df = collector.generate_sample_dataset(n_players=data_size)
-        
-        if df.empty:
-            raise Exception("Échec de la collecte des données")
-        
-        filepath = collector.save_raw_data(df)
-        results['data_collection'] = {
-            'status': 'success',
-            'samples': len(df),
-            'features': len(df.columns),
-            'filepath': filepath
-        }
-        
-        LOGGER.info(f"✅ Collecte terminée: {len(df)} joueurs, {len(df.columns)} features")
+        try:
+            from data_collection import CSGODataCollector
+            
+            collector = CSGODataCollector()
+            df = collector.generate_sample_dataset(n_players=data_size)
+            
+            if df.empty:
+                raise Exception("Échec de la collecte des données")
+            
+            filepath = collector.save_raw_data(df)
+            
+            # Correction automatique du data leakage
+            LOGGER.info("🔧 Correction automatique du data leakage...")
+            from data_leakage import create_independent_target
+            
+            df_fixed, forbidden = create_independent_target(df)
+            
+            # Sauvegarder la version corrigée
+            fixed_path = Path("data/raw/csgo_raw_data_fixed.csv")
+            df_fixed.to_csv(fixed_path, index=False)
+            LOGGER.info(f"💾 Données corrigées sauvegardées: {fixed_path}")
+            
+            results['data_collection'] = {
+                'status': 'success',
+                'samples': len(df),
+                'features': len(df.columns),
+                'filepath': filepath,
+                'fixed_filepath': fixed_path
+            }
+            
+            LOGGER.info(f"✅ Collecte terminée: {len(df)} joueurs, {len(df.columns)} features")
+            
+        except ImportError as e:
+            LOGGER.error(f"❌ Erreur d'import pour la collecte: {e}")
+            raise Exception("Module de collecte non disponible")
+        except Exception as e:
+            LOGGER.error(f"❌ Erreur lors de la collecte: {e}")
+            raise
     
     # ========================================================================
     # ÉTAPE 2: PREPROCESSING
@@ -149,37 +197,45 @@ def execute_pipeline(steps, data_size, quick_mode):
     if 'preprocess' in steps:
         LOGGER.info("🧹 Étape 2: Preprocessing des données...")
         
-        from data_preprocessing import CSGODataPreprocessor
-        
-        preprocessor = CSGODataPreprocessor()
-        
-        # Chargement et nettoyage
-        df_raw = preprocessor.load_raw_data()
-        df_clean = preprocessor.clean_data(df_raw)
-        df_imputed = preprocessor.handle_missing_values(df_clean)
-        df_features = preprocessor.create_derived_features(df_imputed)
-        df_selected = preprocessor.select_features(df_features)
-        
-        # Division et normalisation
-        X_train, X_val, X_test, y_train, y_val, y_test = preprocessor.split_data(df_selected)
-        X_train_scaled, X_val_scaled, X_test_scaled = preprocessor.scale_features(
-            X_train, X_val, X_test
-        )
-        
-        # Sauvegarde
-        preprocessor.save_processed_data(
-            X_train=X_train_scaled, X_val=X_val_scaled, X_test=X_test_scaled,
-            y_train=y_train, y_val=y_val, y_test=y_test
-        )
-        
-        results['preprocessing'] = {
-            'status': 'success',
-            'original_samples': len(df_raw),
-            'cleaned_samples': len(df_clean),
-            'final_features': len(X_train_scaled.columns)
-        }
-        
-        LOGGER.info(f"✅ Preprocessing terminé: {len(df_clean)} échantillons, {len(X_train_scaled.columns)} features")
+        try:
+            from data_preprocessing import CSGODataPreprocessor
+            
+            preprocessor = CSGODataPreprocessor()
+            
+            # Chargement et nettoyage
+            df_raw = preprocessor.load_raw_data()
+            df_clean = preprocessor.clean_data(df_raw)
+            df_imputed = preprocessor.handle_missing_values(df_clean)
+            df_features = preprocessor.create_derived_features(df_imputed)
+            df_selected = preprocessor.select_features(df_features)
+            
+            # Division et normalisation
+            X_train, X_val, X_test, y_train, y_val, y_test = preprocessor.split_data(df_selected)
+            X_train_scaled, X_val_scaled, X_test_scaled = preprocessor.scale_features(
+                X_train, X_val, X_test
+            )
+            
+            # Sauvegarde
+            preprocessor.save_processed_data(
+                X_train=X_train_scaled, X_val=X_val_scaled, X_test=X_test_scaled,
+                y_train=y_train, y_val=y_val, y_test=y_test
+            )
+            
+            results['preprocessing'] = {
+                'status': 'success',
+                'original_samples': len(df_raw),
+                'cleaned_samples': len(df_clean),
+                'final_features': len(X_train_scaled.columns)
+            }
+            
+            LOGGER.info(f"✅ Preprocessing terminé: {len(df_clean)} échantillons, {len(X_train_scaled.columns)} features")
+            
+        except ImportError as e:
+            LOGGER.error(f"❌ Erreur d'import pour le preprocessing: {e}")
+            raise Exception("Module de preprocessing non disponible")
+        except Exception as e:
+            LOGGER.error(f"❌ Erreur lors du preprocessing: {e}")
+            raise
     
     # ========================================================================
     # ÉTAPE 3: FEATURE ENGINEERING
@@ -187,51 +243,59 @@ def execute_pipeline(steps, data_size, quick_mode):
     if 'features' in steps:
         LOGGER.info("🔧 Étape 3: Feature Engineering...")
         
-        from feature_engineering import CSGOFeatureEngineer
-        
-        engineer = CSGOFeatureEngineer()
-        
-        # Chargement des données préprocessées
-        X_train, X_val, X_test, y_train, y_val, y_test = engineer.load_processed_data()
-        
-        # Features avancées
-        X_train_adv, X_val_adv, X_test_adv = engineer.create_advanced_features(
-            X_train, X_val, X_test
-        )
-        
-        # Features polynomiales (si pas en mode rapide)
-        if not quick_mode:
-            X_train_poly, X_val_poly, X_test_poly = engineer.create_polynomial_features(
-                X_train_adv, X_val_adv, X_test_adv, degree=2
+        try:
+            from feature_engineering import CSGOFeatureEngineer
+            
+            engineer = CSGOFeatureEngineer()
+            
+            # Chargement des données préprocessées
+            X_train, X_val, X_test, y_train, y_val, y_test = engineer.load_processed_data()
+            
+            # Features avancées
+            X_train_adv, X_val_adv, X_test_adv = engineer.create_advanced_features(
+                X_train, X_val, X_test
             )
-        else:
-            X_train_poly, X_val_poly, X_test_poly = X_train_adv, X_val_adv, X_test_adv
-        
-        # Sélection des meilleures features
-        k_features = 30 if quick_mode else 40
-        X_train_selected, X_val_selected, X_test_selected = engineer.select_best_features(
-            X_train_poly, X_val_poly, X_test_poly, y_train, k=k_features
-        )
-        
-        # Sauvegarde
-        engineer.save_engineered_features(
-            X_train_engineered=X_train_selected,
-            X_val_engineered=X_val_selected,
-            X_test_engineered=X_test_selected,
-            y_train_engineered=y_train,
-            y_val_engineered=y_val,
-            y_test_engineered=y_test
-        )
-        
-        results['feature_engineering'] = {
-            'status': 'success',
-            'initial_features': X_train.shape[1],
-            'advanced_features': X_train_adv.shape[1],
-            'final_features': X_train_selected.shape[1],
-            'selected_features': engineer.selected_features[:10]  # Top 10
-        }
-        
-        LOGGER.info(f"✅ Feature Engineering terminé: {X_train_selected.shape[1]} features finales")
+            
+            # Features polynomiales (si pas en mode rapide)
+            if not quick_mode:
+                X_train_poly, X_val_poly, X_test_poly = engineer.create_polynomial_features(
+                    X_train_adv, X_val_adv, X_test_adv, degree=2
+                )
+            else:
+                X_train_poly, X_val_poly, X_test_poly = X_train_adv, X_val_adv, X_test_adv
+            
+            # Sélection des meilleures features
+            k_features = 30 if quick_mode else 40
+            X_train_selected, X_val_selected, X_test_selected = engineer.select_best_features(
+                X_train_poly, X_val_poly, X_test_poly, y_train, k=k_features
+            )
+            
+            # Sauvegarde
+            engineer.save_engineered_features(
+                X_train_engineered=X_train_selected,
+                X_val_engineered=X_val_selected,
+                X_test_engineered=X_test_selected,
+                y_train_engineered=y_train,
+                y_val_engineered=y_val,
+                y_test_engineered=y_test
+            )
+            
+            results['feature_engineering'] = {
+                'status': 'success',
+                'initial_features': X_train.shape[1],
+                'advanced_features': X_train_adv.shape[1],
+                'final_features': X_train_selected.shape[1],
+                'selected_features': engineer.selected_features[:10] if hasattr(engineer, 'selected_features') else []
+            }
+            
+            LOGGER.info(f"✅ Feature Engineering terminé: {X_train_selected.shape[1]} features finales")
+            
+        except ImportError as e:
+            LOGGER.warning(f"⚠️ Module feature engineering non disponible: {e}")
+            LOGGER.info("📋 Passage à l'étape suivante avec données preprocessées")
+        except Exception as e:
+            LOGGER.error(f"❌ Erreur lors du feature engineering: {e}")
+            LOGGER.info("📋 Passage à l'étape suivante avec données preprocessées")
     
     # ========================================================================
     # ÉTAPE 4: MODÉLISATION
@@ -239,44 +303,65 @@ def execute_pipeline(steps, data_size, quick_mode):
     if 'model' in steps:
         LOGGER.info("🤖 Étape 4: Entraînement des modèles...")
         
-        from models import CSGOModelTrainer
-        
-        trainer = CSGOModelTrainer()
-        
-        # Chargement des données engineered
-        X_train, X_val, X_test, y_train, y_val, y_test = trainer.load_data('engineered')
-        
-        # Entraînement baseline
-        baseline_results = trainer.train_baseline_models(X_train, X_val, y_train, y_val)
-        
-        # Optimisation (réduite en mode rapide)
-        top_models = 2 if quick_mode else 3
-        optimized_results = trainer.hyperparameter_tuning(
-            X_train, y_train, top_models=top_models
-        )
-        
-        # Sélection du meilleur modèle
-        best_name, best_model, model_performances = trainer.select_best_model(
-            optimized_results, X_val, y_val
-        )
-        
-        # Évaluation finale
-        final_results = trainer.final_evaluation(X_test, y_test, model_performances)
-        
-        # Sauvegarde du modèle
-        model_path = trainer.save_best_model()
-        
-        results['modeling'] = {
-            'status': 'success',
-            'best_model': best_name,
-            'test_accuracy': final_results['test_metrics']['accuracy'],
-            'test_auc': final_results['test_metrics']['roc_auc'],
-            'model_path': str(model_path),
-            'baseline_models': len(baseline_results),
-            'optimized_models': len(optimized_results)
-        }
-        
-        LOGGER.info(f"✅ Modélisation terminée: {best_name} - Accuracy: {final_results['test_metrics']['accuracy']:.4f}")
+        try:
+            from models import CSGOModelTrainer
+            
+            trainer = CSGOModelTrainer()
+            
+            # Chargement des données (engineered si disponible, sinon processed)
+            try:
+                # Essayer les données engineered d'abord
+                from config.config import FEATURES_DATA_DIR
+                X_train = pd.read_csv(FEATURES_DATA_DIR / "X_train_engineered.csv")
+                X_val = pd.read_csv(FEATURES_DATA_DIR / "X_val_engineered.csv")
+                X_test = pd.read_csv(FEATURES_DATA_DIR / "X_test_engineered.csv")
+                y_train = pd.read_csv(FEATURES_DATA_DIR / "y_train_engineered.csv").iloc[:, 0]
+                y_val = pd.read_csv(FEATURES_DATA_DIR / "y_val_engineered.csv").iloc[:, 0]
+                y_test = pd.read_csv(FEATURES_DATA_DIR / "y_test_engineered.csv").iloc[:, 0]
+                LOGGER.info("📁 Utilisation des données engineered")
+            except:
+                # Fallback vers données processed
+                X_train, X_val, X_test, y_train, y_val, y_test = trainer.load_data()
+                LOGGER.info("📁 Utilisation des données processed")
+            
+            # Entraînement baseline
+            baseline_results = trainer.train_baseline_models(X_train, X_val, y_train, y_val)
+            
+            # Optimisation (réduite en mode rapide)
+            top_models = 2 if quick_mode else 3
+            optimized_results = trainer.hyperparameter_tuning(
+                X_train, y_train, top_models=top_models
+            )
+            
+            # Sélection du meilleur modèle
+            best_name, best_model, model_performances = trainer.select_best_model(
+                optimized_results, X_val, y_val
+            )
+            
+            # Évaluation finale
+            final_results = trainer.final_evaluation(X_test, y_test, model_performances)
+            
+            # Sauvegarde du modèle
+            model_path = trainer.save_best_model()
+            
+            results['modeling'] = {
+                'status': 'success',
+                'best_model': best_name,
+                'test_accuracy': final_results['test_metrics']['accuracy'],
+                'test_auc': final_results['test_metrics']['roc_auc'],
+                'model_path': str(model_path),
+                'baseline_models': len(baseline_results),
+                'optimized_models': len(optimized_results)
+            }
+            
+            LOGGER.info(f"✅ Modélisation terminée: {best_name} - Accuracy: {final_results['test_metrics']['accuracy']:.4f}")
+            
+        except ImportError as e:
+            LOGGER.error(f"❌ Erreur d'import pour la modélisation: {e}")
+            raise Exception("Module de modélisation non disponible")
+        except Exception as e:
+            LOGGER.error(f"❌ Erreur lors de la modélisation: {e}")
+            raise
     
     # ========================================================================
     # ÉTAPE 5: ÉVALUATION ET VISUALISATIONS
@@ -284,40 +369,46 @@ def execute_pipeline(steps, data_size, quick_mode):
     if 'evaluate' in steps:
         LOGGER.info("📊 Étape 5: Évaluation et visualisations...")
         
-        from evaluation import CSGOModelEvaluator
-        
-        evaluator = CSGOModelEvaluator()
-        
-        # Chargement du modèle et des données
-        evaluator.load_model()
-        X_test, y_test = evaluator.load_test_data()
-        
-        # Évaluation complète
-        eval_results = evaluator.evaluate_model(X_test, y_test)
-        
-        # Génération des visualisations (si pas en mode rapide)
-        if not quick_mode:
-            try:
-                evaluator.plot_confusion_matrix()
-                evaluator.plot_roc_curve()
-                evaluator.plot_precision_recall_curve()
-                evaluator.plot_feature_importance(X_test)
-                evaluator.plot_prediction_distribution()
-            except Exception as e:
-                LOGGER.warning(f"⚠️ Erreur visualisations: {e}")
-        
-        # Rapport final
-        report = evaluator.generate_evaluation_report()
-        
-        results['evaluation'] = {
-            'status': 'success',
-            'final_accuracy': eval_results['metrics']['accuracy'],
-            'final_auc': eval_results['metrics']['roc_auc'],
-            'model_name': evaluator.model_name,
-            'visualizations_generated': not quick_mode
-        }
-        
-        LOGGER.info(f"✅ Évaluation terminée: Accuracy {eval_results['metrics']['accuracy']:.4f}")
+        try:
+            from evaluation import CSGOModelEvaluator
+            
+            evaluator = CSGOModelEvaluator()
+            
+            # Chargement du modèle et des données
+            evaluator.load_model()
+            X_test, y_test = evaluator.load_test_data()
+            
+            # Évaluation complète
+            eval_results = evaluator.evaluate_model(X_test, y_test)
+            
+            # Génération des visualisations (si pas en mode rapide)
+            if not quick_mode:
+                try:
+                    evaluator.plot_confusion_matrix()
+                    evaluator.plot_roc_curve()
+                    evaluator.plot_precision_recall_curve()
+                    evaluator.plot_feature_importance(X_test)
+                    evaluator.plot_prediction_distribution()
+                except Exception as e:
+                    LOGGER.warning(f"⚠️ Erreur visualisations: {e}")
+            
+            # Rapport final
+            report = evaluator.generate_evaluation_report()
+            
+            results['evaluation'] = {
+                'status': 'success',
+                'final_accuracy': eval_results['metrics']['accuracy'],
+                'final_auc': eval_results['metrics']['roc_auc'],
+                'model_name': evaluator.model_name,
+                'visualizations_generated': not quick_mode
+            }
+            
+            LOGGER.info(f"✅ Évaluation terminée: Accuracy {eval_results['metrics']['accuracy']:.4f}")
+            
+        except ImportError as e:
+            LOGGER.warning(f"⚠️ Module d'évaluation non disponible: {e}")
+        except Exception as e:
+            LOGGER.warning(f"⚠️ Erreur lors de l'évaluation: {e}")
     
     # ========================================================================
     # RÉSUMÉ FINAL
@@ -356,7 +447,7 @@ def print_pipeline_summary(results, steps):
             
             elif step == 'features' and 'final_features' in result:
                 print(f"    🔧 {result['initial_features']} → {result['final_features']} features")
-                if 'selected_features' in result:
+                if 'selected_features' in result and result['selected_features']:
                     top_features = ', '.join(result['selected_features'][:3])
                     print(f"    🏆 Top features: {top_features}...")
             
