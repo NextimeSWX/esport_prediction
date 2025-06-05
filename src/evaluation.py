@@ -1,5 +1,5 @@
 """
-Module d'évaluation et visualisation des modèles CS:GO
+Module d'évaluation et visualisation des modèles CS:GO - VERSION CORRIGÉE
 École89 - 2025
 """
 
@@ -9,20 +9,48 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import (
     confusion_matrix, classification_report, roc_curve, auc,
-    precision_recall_curve, learning_curve, validation_curve
+    precision_recall_curve, accuracy_score, precision_score, 
+    recall_score, f1_score, roc_auc_score
 )
-from sklearn.model_selection import StratifiedKFold
+# CORRECTION: learning_curve est dans model_selection, pas metrics
+from sklearn.model_selection import learning_curve, validation_curve, StratifiedKFold
 import joblib
 import sys
 from pathlib import Path
+import warnings
+warnings.filterwarnings('ignore')
 
 # Ajouter le dossier parent au path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from config.config import (
-    MODELS_DIR, FEATURES_DATA_DIR, COLORS, PLOT_STYLE, 
-    FIGURE_SIZE, DPI, RANDOM_STATE, LOGGER
-)
+try:
+    from config.config import (
+        MODELS_DIR, FEATURES_DATA_DIR, PROCESSED_DATA_DIR, COLORS, PLOT_STYLE, 
+        FIGURE_SIZE, DPI, RANDOM_STATE, LOGGER
+    )
+except ImportError:
+    # Configuration de base si config.py incomplet
+    MODELS_DIR = Path("models")
+    FEATURES_DATA_DIR = Path("data/features")
+    PROCESSED_DATA_DIR = Path("data/processed")
+    
+    COLORS = {
+        'primary': '#1f77b4',
+        'secondary': '#ff7f0e', 
+        'accent': '#2ca02c',
+        'danger': '#d62728',
+        'warning': '#ff7f0e',
+        'success': '#2ca02c'
+    }
+    
+    PLOT_STYLE = 'default'
+    FIGURE_SIZE = (10, 6)
+    DPI = 100
+    RANDOM_STATE = 42
+    
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    LOGGER = logging.getLogger(__name__)
 
 # Configuration matplotlib
 plt.style.use(PLOT_STYLE)
@@ -53,15 +81,15 @@ class CSGOModelEvaluator:
     def load_test_data(self):
         """Charge les données de test"""
         try:
+            # Essayer les données engineered d'abord
             X_test = pd.read_csv(FEATURES_DATA_DIR / "X_test_engineered.csv")
             y_test = pd.read_csv(FEATURES_DATA_DIR / "y_test_engineered.csv").iloc[:, 0]
             
-            LOGGER.info(f"📁 Données de test chargées: {X_test.shape}")
+            LOGGER.info(f"📁 Données engineered chargées: {X_test.shape}")
             return X_test, y_test
             
         except FileNotFoundError:
             # Fallback vers données processed
-            from config.config import PROCESSED_DATA_DIR
             X_test = pd.read_csv(PROCESSED_DATA_DIR / "X_test.csv")
             y_test = pd.read_csv(PROCESSED_DATA_DIR / "y_test.csv").iloc[:, 0]
             
@@ -92,8 +120,6 @@ class CSGOModelEvaluator:
             y_proba = self.model.decision_function(X_test)
         
         # Métriques de base
-        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
-        
         metrics = {
             'accuracy': accuracy_score(y_test, y_pred),
             'precision': precision_score(y_test, y_pred, average='weighted'),
@@ -304,76 +330,6 @@ class CSGOModelEvaluator:
         for i, row in importance_data.head().iterrows():
             LOGGER.info(f"  {row['feature']}: {row['importance']:.4f}")
     
-    def plot_learning_curves(self, X_train, y_train, figsize=(12, 5)):
-        """Visualise les courbes d'apprentissage"""
-        if self.model is None:
-            raise ValueError("Aucun modèle chargé")
-        
-        LOGGER.info("📈 Génération des courbes d'apprentissage...")
-        
-        # Tailles d'entraînement
-        train_sizes = np.linspace(0.1, 1.0, 10)
-        
-        # Calcul des courbes d'apprentissage
-        train_sizes_abs, train_scores, val_scores = learning_curve(
-            self.model, X_train, y_train,
-            train_sizes=train_sizes,
-            cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE),
-            scoring='roc_auc',
-            n_jobs=-1,
-            random_state=RANDOM_STATE
-        )
-        
-        # Calcul des moyennes et écarts-types
-        train_mean = np.mean(train_scores, axis=1)
-        train_std = np.std(train_scores, axis=1)
-        val_mean = np.mean(val_scores, axis=1)
-        val_std = np.std(val_scores, axis=1)
-        
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
-        
-        # Courbe d'apprentissage
-        ax1.plot(train_sizes_abs, train_mean, 'o-', color=COLORS['primary'], 
-                label='Score d\'entraînement', linewidth=2)
-        ax1.fill_between(train_sizes_abs, train_mean - train_std, train_mean + train_std, 
-                        alpha=0.2, color=COLORS['primary'])
-        
-        ax1.plot(train_sizes_abs, val_mean, 'o-', color=COLORS['secondary'], 
-                label='Score de validation', linewidth=2)
-        ax1.fill_between(train_sizes_abs, val_mean - val_std, val_mean + val_std, 
-                        alpha=0.2, color=COLORS['secondary'])
-        
-        ax1.set_xlabel('Nombre d\'échantillons d\'entraînement')
-        ax1.set_ylabel('Score AUC-ROC')
-        ax1.set_title('Courbe d\'Apprentissage')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        
-        # Gap entre train et validation
-        gap = train_mean - val_mean
-        ax2.plot(train_sizes_abs, gap, 'o-', color=COLORS['warning'], linewidth=2)
-        ax2.fill_between(train_sizes_abs, gap - (train_std + val_std), 
-                        gap + (train_std + val_std), alpha=0.2, color=COLORS['warning'])
-        
-        ax2.set_xlabel('Nombre d\'échantillons d\'entraînement')
-        ax2.set_ylabel('Écart Train-Validation')
-        ax2.set_title('Gap Overfitting')
-        ax2.grid(True, alpha=0.3)
-        ax2.axhline(y=0, color='k', linestyle='--', alpha=0.5)
-        
-        plt.suptitle(f'Analyse d\'Apprentissage - {self.model_name}', fontsize=16, fontweight='bold')
-        plt.tight_layout()
-        plt.show()
-        
-        # Analyse de l'overfitting
-        final_gap = gap[-1]
-        if final_gap > 0.1:
-            LOGGER.warning(f"⚠️ Overfitting détecté - Gap: {final_gap:.3f}")
-        elif final_gap < 0.02:
-            LOGGER.info(f"✅ Bon équilibre biais-variance - Gap: {final_gap:.3f}")
-        else:
-            LOGGER.info(f"👍 Overfitting modéré - Gap: {final_gap:.3f}")
-    
     def plot_prediction_distribution(self, figsize=(12, 5)):
         """Visualise la distribution des prédictions"""
         if 'predictions' not in self.results:
@@ -406,7 +362,6 @@ class CSGOModelEvaluator:
         for thresh in thresholds:
             y_pred_thresh = (y_proba >= thresh).astype(int)
             if len(np.unique(y_pred_thresh)) == 2:  # Éviter division par zéro
-                from sklearn.metrics import precision_score, recall_score, f1_score
                 precisions.append(precision_score(y_true, y_pred_thresh, average='binary'))
                 recalls.append(recall_score(y_true, y_pred_thresh, average='binary'))
                 f1_scores.append(f1_score(y_true, y_pred_thresh, average='binary'))
@@ -503,6 +458,11 @@ class CSGOModelEvaluator:
 def main():
     """Fonction principale pour l'évaluation complète"""
     
+    print("📊 " + "="*50)
+    print("   ÉVALUATION DES MODÈLES CS:GO")
+    print("   École89 - 2025")
+    print("="*54)
+    
     # Initialisation
     evaluator = CSGOModelEvaluator()
     
@@ -539,9 +499,14 @@ def main():
         
         print("\n✅ ÉVALUATION TERMINÉE!")
         print("📊 Toutes les visualisations ont été générées")
+        print("💾 Consultez les graphiques pour l'analyse détaillée")
+        
+        return report
         
     except Exception as e:
         LOGGER.error(f"❌ Erreur pendant l'évaluation: {e}")
+        import traceback
+        traceback.print_exc()
         raise
 
 if __name__ == "__main__":

@@ -1,0 +1,6 @@
+{
+  "model_name": "gradient_boosting",
+  "model_type": "GradientBoostingClassifier",
+  "features_count": 31,
+  "training_date": "2025-06-05T17:25:26.998524"
+}

@@ -15,6 +15,8 @@ Examples:
 import argparse
 import sys
 import time
+import pandas as pd
+import numpy as np
 from pathlib import Path
 
 # Ajouter le dossier src au path
@@ -165,21 +167,22 @@ def execute_pipeline(steps, data_size, quick_mode):
             
             # Correction automatique du data leakage
             LOGGER.info("🔧 Correction automatique du data leakage...")
-            from data_leakage import create_independent_target
-            
-            df_fixed, forbidden = create_independent_target(df)
-            
-            # Sauvegarder la version corrigée
-            fixed_path = Path("data/raw/csgo_raw_data_fixed.csv")
-            df_fixed.to_csv(fixed_path, index=False)
-            LOGGER.info(f"💾 Données corrigées sauvegardées: {fixed_path}")
+            try:
+                from data_leakage import create_independent_target
+                df_fixed, forbidden = create_independent_target(df)
+                
+                # Sauvegarder la version corrigée
+                fixed_path = Path("data/raw/csgo_raw_data_fixed.csv")
+                df_fixed.to_csv(fixed_path, index=False)
+                LOGGER.info(f"💾 Données corrigées sauvegardées: {fixed_path}")
+            except ImportError:
+                LOGGER.warning("⚠️ Module data_leakage non disponible - utilisation des données brutes")
             
             results['data_collection'] = {
                 'status': 'success',
                 'samples': len(df),
                 'features': len(df.columns),
-                'filepath': filepath,
-                'fixed_filepath': fixed_path
+                'filepath': filepath
             }
             
             LOGGER.info(f"✅ Collecte terminée: {len(df)} joueurs, {len(df.columns)} features")
@@ -323,6 +326,9 @@ def execute_pipeline(steps, data_size, quick_mode):
                 # Fallback vers données processed
                 X_train, X_val, X_test, y_train, y_val, y_test = trainer.load_data()
                 LOGGER.info("📁 Utilisation des données processed")
+            
+            # Création des modèles de base
+            trainer.create_base_models()
             
             # Entraînement baseline
             baseline_results = trainer.train_baseline_models(X_train, X_val, y_train, y_val)

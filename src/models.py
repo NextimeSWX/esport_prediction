@@ -1,312 +1,536 @@
 """
-Modèles ML avancés pour maximiser la note du projet
+Module de modélisation ML pour CS:GO - Version Complète
 École89 - 2025
 """
 
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import VotingClassifier, StackingClassifier, ExtraTreesClassifier
-from sklearn.naive_bayes import GaussianNB
+import joblib
+import sys
+from pathlib import Path
+from sklearn.ensemble import (
+    RandomForestClassifier, GradientBoostingClassifier, 
+    VotingClassifier, ExtraTreesClassifier
+)
+from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
+from sklearn.naive_bayes import GaussianNB
 from sklearn.neural_network import MLPClassifier
-from sklearn.model_selection import cross_val_score, StratifiedKFold
+from sklearn.model_selection import (
+    cross_val_score, StratifiedKFold, GridSearchCV, RandomizedSearchCV
+)
+from sklearn.metrics import (
+    classification_report, confusion_matrix, roc_auc_score,
+    accuracy_score, precision_score, recall_score, f1_score
+)
 import warnings
 warnings.filterwarnings('ignore')
 
-class AdvancedCSGOModels:
-    """Modèles ML avancés pour la prédiction CS:GO"""
+# Ajouter le dossier parent au path
+sys.path.append(str(Path(__file__).parent.parent))
+
+try:
+    import xgboost as xgb
+    XGBOOST_AVAILABLE = True
+except ImportError:
+    XGBOOST_AVAILABLE = False
+
+try:
+    from config.config import (
+        MODELS_DIR, PROCESSED_DATA_DIR, FEATURES_DATA_DIR,
+        RANDOM_STATE, CV_FOLDS, PRIMARY_METRIC, LOGGER
+    )
+except ImportError:
+    # Configuration de base si config.py incomplet
+    MODELS_DIR = Path("models")
+    PROCESSED_DATA_DIR = Path("data/processed")
+    FEATURES_DATA_DIR = Path("data/features")
+    MODELS_DIR.mkdir(exist_ok=True)
     
-    def __init__(self, random_state=42):
-        self.random_state = random_state
+    RANDOM_STATE = 42
+    CV_FOLDS = 5
+    PRIMARY_METRIC = 'roc_auc'
+    
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    LOGGER = logging.getLogger(__name__)
+
+class CSGOModelTrainer:
+    """Classe principale pour l'entraînement des modèles CS:GO"""
+    
+    def __init__(self):
         self.models = {}
-        self.ensemble_models = {}
         self.results = {}
+        self.best_model = None
+        self.best_model_name = None
+        self.cv_results = {}
+        
+    def load_data(self):
+        """Charge les données preprocessées"""
+        try:
+            # Essayer les données features d'abord
+            X_train = pd.read_csv(FEATURES_DATA_DIR / "X_train_engineered.csv")
+            X_val = pd.read_csv(FEATURES_DATA_DIR / "X_val_engineered.csv")
+            X_test = pd.read_csv(FEATURES_DATA_DIR / "X_test_engineered.csv")
+            y_train = pd.read_csv(FEATURES_DATA_DIR / "y_train_engineered.csv").iloc[:, 0]
+            y_val = pd.read_csv(FEATURES_DATA_DIR / "y_val_engineered.csv").iloc[:, 0]
+            y_test = pd.read_csv(FEATURES_DATA_DIR / "y_test_engineered.csv").iloc[:, 0]
+            
+            LOGGER.info("📁 Données engineered chargées")
+            
+        except FileNotFoundError:
+            # Fallback vers données processed
+            X_train = pd.read_csv(PROCESSED_DATA_DIR / "X_train.csv")
+            X_val = pd.read_csv(PROCESSED_DATA_DIR / "X_val.csv")
+            X_test = pd.read_csv(PROCESSED_DATA_DIR / "X_test.csv")
+            y_train = pd.read_csv(PROCESSED_DATA_DIR / "y_train.csv").iloc[:, 0]
+            y_val = pd.read_csv(PROCESSED_DATA_DIR / "y_val.csv").iloc[:, 0]
+            y_test = pd.read_csv(PROCESSED_DATA_DIR / "y_test.csv").iloc[:, 0]
+            
+            LOGGER.info("📁 Données processed chargées")
+        
+        LOGGER.info(f"📊 Données chargées: Train {X_train.shape}, Val {X_val.shape}, Test {X_test.shape}")
+        return X_train, X_val, X_test, y_train, y_val, y_test
     
     def create_base_models(self):
-        """Crée une collection étendue de modèles de base"""
+        """Crée la collection de modèles de base"""
         
         self.models = {
-            # Modèles linéaires
             'logistic_regression': LogisticRegression(
-                random_state=self.random_state, max_iter=1000
+                random_state=RANDOM_STATE,
+                max_iter=1000,
+                solver='liblinear'
             ),
             
-            # Modèles basés sur les arbres
             'random_forest': RandomForestClassifier(
-                n_estimators=100, random_state=self.random_state, n_jobs=-1
-            ),
-            'extra_trees': ExtraTreesClassifier(
-                n_estimators=100, random_state=self.random_state, n_jobs=-1
-            ),
-            'xgboost': xgb.XGBClassifier(
-                random_state=self.random_state, eval_metric='logloss', verbosity=0
-            ),
-            'gradient_boosting': GradientBoostingClassifier(
-                random_state=self.random_state, n_estimators=100
+                n_estimators=100,
+                random_state=RANDOM_STATE,
+                n_jobs=-1,
+                max_depth=10
             ),
             
-            # Modèles probabilistes
+            'gradient_boosting': GradientBoostingClassifier(
+                n_estimators=100,
+                random_state=RANDOM_STATE,
+                learning_rate=0.1,
+                max_depth=6
+            ),
+            
+            'extra_trees': ExtraTreesClassifier(
+                n_estimators=100,
+                random_state=RANDOM_STATE,
+                n_jobs=-1,
+                max_depth=10
+            ),
+            
+            'svm': SVC(
+                kernel='rbf',
+                probability=True,
+                random_state=RANDOM_STATE,
+                C=1.0
+            ),
+            
             'naive_bayes': GaussianNB(),
             
-            # Support Vector Machine
-            'svm_linear': SVC(
-                kernel='linear', probability=True, random_state=self.random_state
-            ),
-            'svm_rbf': SVC(
-                kernel='rbf', probability=True, random_state=self.random_state
-            ),
-            
-            # Réseau de neurones
             'neural_network': MLPClassifier(
-                hidden_layer_sizes=(100, 50), random_state=self.random_state,
-                max_iter=500, early_stopping=True
+                hidden_layer_sizes=(100, 50),
+                random_state=RANDOM_STATE,
+                max_iter=500,
+                early_stopping=True,
+                validation_fraction=0.1
             )
         }
         
-        print(f"🤖 {len(self.models)} modèles de base créés")
+        # Ajouter XGBoost si disponible
+        if XGBOOST_AVAILABLE:
+            self.models['xgboost'] = xgb.XGBClassifier(
+                n_estimators=100,
+                random_state=RANDOM_STATE,
+                eval_metric='logloss',
+                verbosity=0,
+                learning_rate=0.1,
+                max_depth=6
+            )
+        
+        LOGGER.info(f"🤖 {len(self.models)} modèles de base créés")
         return self.models
     
-    def create_ensemble_models(self):
-        """Crée des modèles d'ensemble avancés"""
+    def train_baseline_models(self, X_train, X_val, y_train, y_val):
+        """Entraîne et évalue les modèles de base"""
         
-        # Modèles de base pour les ensembles
-        base_models = [
-            ('rf', RandomForestClassifier(n_estimators=50, random_state=self.random_state)),
-            ('xgb', xgb.XGBClassifier(n_estimators=50, random_state=self.random_state, verbosity=0)),
-            ('gb', GradientBoostingClassifier(n_estimators=50, random_state=self.random_state)),
-            ('lr', LogisticRegression(random_state=self.random_state))
-        ]
+        LOGGER.info("🎯 Entraînement des modèles baseline...")
         
-        self.ensemble_models = {
-            # Voting Classifier (Hard)
-            'voting_hard': VotingClassifier(
-                estimators=base_models,
-                voting='hard'
-            ),
-            
-            # Voting Classifier (Soft) - Utilise les probabilités
-            'voting_soft': VotingClassifier(
-                estimators=base_models,
-                voting='soft'
-            ),
-            
-            # Stacking Classifier
-            'stacking': StackingClassifier(
-                estimators=base_models,
-                final_estimator=LogisticRegression(random_state=self.random_state),
-                cv=5
-            )
-        }
+        cv = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
         
-        print(f"🔗 {len(self.ensemble_models)} modèles d'ensemble créés")
-        return self.ensemble_models
-    
-    def evaluate_all_models(self, X_train, y_train, cv_folds=5):
-        """Évalue tous les modèles avec validation croisée"""
-        
-        print("📊 Évaluation de tous les modèles...")
-        
-        # Stratified K-Fold pour données déséquilibrées
-        cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=self.random_state)
-        
-        all_models = {**self.models, **self.ensemble_models}
-        
-        for name, model in all_models.items():
-            print(f"  Évaluation: {name}")
+        for name, model in self.models.items():
+            LOGGER.info(f"  Entraînement: {name}")
             
             try:
-                # Validation croisée multiple métriques
-                accuracy_scores = cross_val_score(model, X_train, y_train, cv=cv, scoring='accuracy')
-                roc_scores = cross_val_score(model, X_train, y_train, cv=cv, scoring='roc_auc')
-                f1_scores = cross_val_score(model, X_train, y_train, cv=cv, scoring='f1')
+                # Validation croisée
+                cv_scores = cross_val_score(
+                    model, X_train, y_train, 
+                    cv=cv, scoring=PRIMARY_METRIC, n_jobs=-1
+                )
+                
+                # Entraînement sur train complet
+                model.fit(X_train, y_train)
+                
+                # Évaluation sur validation
+                if hasattr(model, 'predict_proba'):
+                    y_val_proba = model.predict_proba(X_val)[:, 1]
+                else:
+                    y_val_proba = model.decision_function(X_val)
+                
+                y_val_pred = model.predict(X_val)
+                
+                # Métriques
+                val_accuracy = accuracy_score(y_val, y_val_pred)
+                val_auc = roc_auc_score(y_val, y_val_proba)
+                val_f1 = f1_score(y_val, y_val_pred)
                 
                 self.results[name] = {
-                    'accuracy_mean': accuracy_scores.mean(),
-                    'accuracy_std': accuracy_scores.std(),
-                    'roc_auc_mean': roc_scores.mean(),
-                    'roc_auc_std': roc_scores.std(),
-                    'f1_mean': f1_scores.mean(),
-                    'f1_std': f1_scores.std(),
-                    'model': model
+                    'model': model,
+                    'cv_score_mean': cv_scores.mean(),
+                    'cv_score_std': cv_scores.std(),
+                    'val_accuracy': val_accuracy,
+                    'val_auc': val_auc,
+                    'val_f1': val_f1,
+                    'cv_scores': cv_scores
                 }
                 
-                print(f"    ✅ AUC: {roc_scores.mean():.4f} (±{roc_scores.std():.4f})")
+                LOGGER.info(f"    ✅ CV AUC: {cv_scores.mean():.4f} (±{cv_scores.std():.4f})")
                 
             except Exception as e:
-                print(f"    ❌ Erreur: {e}")
+                LOGGER.warning(f"    ⚠️ Erreur avec {name}: {e}")
                 continue
         
-        return self.results
-    
-    def get_model_ranking(self, metric='roc_auc_mean'):
-        """Classe les modèles par performance"""
-        
-        if not self.results:
-            raise ValueError("Lancez d'abord evaluate_all_models()")
-        
+        # Classement des modèles
         ranking = sorted(
             self.results.items(),
-            key=lambda x: x[1][metric],
+            key=lambda x: x[1]['cv_score_mean'],
             reverse=True
         )
         
-        print(f"\n🏆 CLASSEMENT DES MODÈLES ({metric}):")
-        print("-" * 50)
+        LOGGER.info("\n🏆 Classement baseline:")
+        for i, (name, results) in enumerate(ranking[:5], 1):
+            LOGGER.info(f"  {i}. {name}: {results['cv_score_mean']:.4f}")
         
-        for i, (name, results) in enumerate(ranking, 1):
-            score = results[metric]
-            std = results.get(f"{metric.split('_')[0]}_std", 0)
-            print(f"{i:2d}. {name:<20} {score:.4f} (±{std:.4f})")
-        
-        return ranking
+        return self.results
     
-    def create_meta_ensemble(self, top_n=3):
-        """Crée un ensemble des meilleurs modèles"""
+    def hyperparameter_tuning(self, X_train, y_train, top_models=3):
+        """Optimise les hyperparamètres des meilleurs modèles"""
         
-        ranking = self.get_model_ranking()
+        LOGGER.info(f"🔧 Optimisation des hyperparamètres (top {top_models})...")
+        
+        # Sélectionner les meilleurs modèles
+        ranking = sorted(
+            self.results.items(),
+            key=lambda x: x[1]['cv_score_mean'],
+            reverse=True
+        )
+        
+        top_model_names = [name for name, _ in ranking[:top_models]]
+        optimized_results = {}
+        
+        # Grilles d'hyperparamètres
+        param_grids = {
+            'random_forest': {
+                'n_estimators': [50, 100, 200],
+                'max_depth': [5, 10, 15, None],
+                'min_samples_split': [2, 5, 10],
+                'min_samples_leaf': [1, 2, 4]
+            },
+            
+            'gradient_boosting': {
+                'n_estimators': [50, 100, 200],
+                'learning_rate': [0.05, 0.1, 0.2],
+                'max_depth': [3, 5, 7],
+                'subsample': [0.8, 0.9, 1.0]
+            },
+            
+            'logistic_regression': {
+                'C': [0.1, 1.0, 10.0, 100.0],
+                'penalty': ['l1', 'l2'],
+                'solver': ['liblinear', 'saga']
+            },
+            
+            'svm': {
+                'C': [0.1, 1.0, 10.0],
+                'kernel': ['rbf', 'poly'],
+                'gamma': ['scale', 'auto', 0.001, 0.01]
+            },
+            
+            'neural_network': {
+                'hidden_layer_sizes': [(50,), (100,), (100, 50), (150, 75)],
+                'learning_rate_init': [0.001, 0.01, 0.1],
+                'alpha': [0.0001, 0.001, 0.01]
+            }
+        }
+        
+        # Ajouter XGBoost si disponible
+        if XGBOOST_AVAILABLE and 'xgboost' in top_model_names:
+            param_grids['xgboost'] = {
+                'n_estimators': [50, 100, 200],
+                'learning_rate': [0.05, 0.1, 0.2],
+                'max_depth': [3, 5, 7],
+                'subsample': [0.8, 0.9, 1.0],
+                'colsample_bytree': [0.8, 0.9, 1.0]
+            }
+        
+        cv = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+        
+        for model_name in top_model_names:
+            if model_name not in param_grids:
+                # Garder le modèle original si pas de grille définie
+                optimized_results[model_name] = self.results[model_name]
+                continue
+            
+            LOGGER.info(f"  Optimisation: {model_name}")
+            
+            try:
+                # Récupérer le modèle de base
+                base_model = self.models[model_name]
+                
+                # Recherche randomisée (plus rapide)
+                search = RandomizedSearchCV(
+                    base_model,
+                    param_grids[model_name],
+                    n_iter=20,  # Nombre d'essais
+                    cv=cv,
+                    scoring=PRIMARY_METRIC,
+                    n_jobs=-1,
+                    random_state=RANDOM_STATE,
+                    verbose=0
+                )
+                
+                search.fit(X_train, y_train)
+                
+                optimized_results[model_name] = {
+                    'model': search.best_estimator_,
+                    'best_score': search.best_score_,
+                    'best_params': search.best_params_,
+                    'cv_results': search.cv_results_
+                }
+                
+                LOGGER.info(f"    ✅ Meilleur score: {search.best_score_:.4f}")
+                LOGGER.info(f"    🔧 Meilleurs params: {list(search.best_params_.keys())[:3]}...")
+                
+            except Exception as e:
+                LOGGER.warning(f"    ⚠️ Erreur optimisation {model_name}: {e}")
+                # Garder le modèle original
+                optimized_results[model_name] = self.results[model_name]
+        
+        return optimized_results
+    
+    def select_best_model(self, optimized_results, X_val, y_val):
+        """Sélectionne le meilleur modèle"""
+        
+        LOGGER.info("🎯 Sélection du meilleur modèle...")
+        
+        model_performances = {}
+        
+        for name, results in optimized_results.items():
+            model = results['model']
+            
+            # Prédictions sur validation
+            if hasattr(model, 'predict_proba'):
+                y_val_proba = model.predict_proba(X_val)[:, 1]
+            else:
+                y_val_proba = model.decision_function(X_val)
+            
+            y_val_pred = model.predict(X_val)
+            
+            # Métriques complètes
+            performance = {
+                'accuracy': accuracy_score(y_val, y_val_pred),
+                'precision': precision_score(y_val, y_val_pred),
+                'recall': recall_score(y_val, y_val_pred),
+                'f1_score': f1_score(y_val, y_val_pred),
+                'roc_auc': roc_auc_score(y_val, y_val_proba),
+                'model': model
+            }
+            
+            model_performances[name] = performance
+        
+        # Sélectionner selon la métrique principale
+        best_name = max(
+            model_performances.keys(),
+            key=lambda x: model_performances[x][PRIMARY_METRIC]
+        )
+        
+        self.best_model_name = best_name
+        self.best_model = model_performances[best_name]['model']
+        
+        LOGGER.info(f"🏆 Meilleur modèle: {best_name}")
+        LOGGER.info(f"📊 Performance: {model_performances[best_name][PRIMARY_METRIC]:.4f}")
+        
+        return best_name, self.best_model, model_performances
+    
+    def final_evaluation(self, X_test, y_test, model_performances):
+        """Évaluation finale sur le set de test"""
+        
+        LOGGER.info("📊 Évaluation finale sur test set...")
+        
+        model = self.best_model
+        
+        # Prédictions finales
+        if hasattr(model, 'predict_proba'):
+            y_test_proba = model.predict_proba(X_test)[:, 1]
+        else:
+            y_test_proba = model.decision_function(X_test)
+        
+        y_test_pred = model.predict(X_test)
+        
+        # Métriques de test
+        test_metrics = {
+            'accuracy': accuracy_score(y_test, y_test_pred),
+            'precision': precision_score(y_test, y_test_pred),
+            'recall': recall_score(y_test, y_test_pred),
+            'f1_score': f1_score(y_test, y_test_pred),
+            'roc_auc': roc_auc_score(y_test, y_test_proba)
+        }
+        
+        # Rapport de classification
+        class_report = classification_report(y_test, y_test_pred, output_dict=True)
+        
+        # Matrice de confusion
+        conf_matrix = confusion_matrix(y_test, y_test_pred)
+        
+        LOGGER.info(f"🎯 Résultats finaux:")
+        LOGGER.info(f"  Accuracy: {test_metrics['accuracy']:.4f}")
+        LOGGER.info(f"  AUC-ROC: {test_metrics['roc_auc']:.4f}")
+        LOGGER.info(f"  F1-Score: {test_metrics['f1_score']:.4f}")
+        
+        return {
+            'test_metrics': test_metrics,
+            'classification_report': class_report,
+            'confusion_matrix': conf_matrix,
+            'predictions': {
+                'y_true': y_test,
+                'y_pred': y_test_pred,
+                'y_proba': y_test_proba
+            }
+        }
+    
+    def save_best_model(self, filename=None):
+        """Sauvegarde le meilleur modèle"""
+        
+        if self.best_model is None:
+            raise ValueError("Aucun meilleur modèle sélectionné")
+        
+        if filename is None:
+            filename = f"best_model_{self.best_model_name}.pkl"
+        
+        filepath = MODELS_DIR / filename
+        joblib.dump(self.best_model, filepath)
+        
+        LOGGER.info(f"💾 Meilleur modèle sauvegardé: {filepath}")
+        
+        # Sauvegarder aussi les métadonnées
+        metadata = {
+            'model_name': self.best_model_name,
+            'model_type': type(self.best_model).__name__,
+            'features_count': len(self.best_model.feature_names_in_) if hasattr(self.best_model, 'feature_names_in_') else 'unknown',
+            'training_date': pd.Timestamp.now().isoformat()
+        }
+        
+        metadata_path = MODELS_DIR / f"metadata_{self.best_model_name}.json"
+        import json
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        return filepath
+    
+    def create_ensemble_model(self, model_performances, top_n=3):
+        """Crée un modèle d'ensemble avec les meilleurs modèles"""
+        
+        LOGGER.info(f"🔗 Création d'un ensemble des {top_n} meilleurs modèles...")
+        
+        # Sélectionner les top N modèles
+        ranking = sorted(
+            model_performances.items(),
+            key=lambda x: x[1][PRIMARY_METRIC],
+            reverse=True
+        )
+        
         top_models = ranking[:top_n]
         
-        # Préparer les estimateurs pour le méta-ensemble
         estimators = [
-            (name, results['model']) 
-            for name, results in top_models
+            (name, performance['model'])
+            for name, performance in top_models
         ]
         
-        meta_ensemble = VotingClassifier(
+        # Ensemble voting (soft pour utiliser les probabilités)
+        ensemble = VotingClassifier(
             estimators=estimators,
             voting='soft'
         )
         
-        print(f"\n🚀 Méta-ensemble créé avec les {top_n} meilleurs modèles:")
+        LOGGER.info(f"📊 Ensemble créé avec:")
         for name, _ in estimators:
-            print(f"  - {name}")
+            score = model_performances[name][PRIMARY_METRIC]
+            LOGGER.info(f"  - {name}: {score:.4f}")
         
-        return meta_ensemble
+        return ensemble
+
+def main():
+    """Fonction principale pour l'entraînement des modèles"""
     
-    def perform_statistical_tests(self, X_train, y_train):
-        """Effectue des tests statistiques entre modèles"""
-        from scipy import stats
-        
-        print("\n📈 Tests statistiques de comparaison...")
-        
-        # Comparer les 3 meilleurs modèles
-        ranking = self.get_model_ranking()
-        top_3 = ranking[:3]
-        
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=self.random_state)
-        
-        model_scores = {}
-        for name, results in top_3:
-            scores = cross_val_score(results['model'], X_train, y_train, cv=cv, scoring='roc_auc')
-            model_scores[name] = scores
-        
-        # Tests de significativité (t-test pairé)
-        models = list(model_scores.keys())
-        for i in range(len(models)):
-            for j in range(i+1, len(models)):
-                model1, model2 = models[i], models[j]
-                scores1, scores2 = model_scores[model1], model_scores[model2]
-                
-                # T-test pairé
-                t_stat, p_value = stats.ttest_rel(scores1, scores2)
-                
-                diff = scores1.mean() - scores2.mean()
-                significance = "***" if p_value < 0.001 else "**" if p_value < 0.01 else "*" if p_value < 0.05 else ""
-                
-                print(f"  {model1} vs {model2}:")
-                print(f"    Différence: {diff:+.4f} (p={p_value:.4f}) {significance}")
-        
-        return model_scores
+    print("🤖 " + "="*50)
+    print("   ENTRAÎNEMENT DES MODÈLES CS:GO")
+    print("   École89 - 2025")
+    print("="*54)
     
-    def generate_model_report(self):
-        """Génère un rapport complet des modèles"""
+    try:
+        # Initialisation
+        trainer = CSGOModelTrainer()
         
-        print("\n" + "="*60)
-        print("RAPPORT COMPLET DES MODÈLES ML")
-        print("="*60)
+        # 1. Chargement des données
+        X_train, X_val, X_test, y_train, y_val, y_test = trainer.load_data()
         
-        if not self.results:
-            print("❌ Aucun résultat disponible")
-            return
+        # 2. Création des modèles de base
+        trainer.create_base_models()
         
-        # Statistiques générales
-        n_models = len(self.results)
-        best_model = max(self.results.items(), key=lambda x: x[1]['roc_auc_mean'])
-        worst_model = min(self.results.items(), key=lambda x: x[1]['roc_auc_mean'])
+        # 3. Entraînement baseline
+        baseline_results = trainer.train_baseline_models(X_train, X_val, y_train, y_val)
         
-        print(f"\n📊 STATISTIQUES GÉNÉRALES:")
-        print(f"  Nombre de modèles testés: {n_models}")
-        print(f"  Meilleur modèle: {best_model[0]} (AUC: {best_model[1]['roc_auc_mean']:.4f})")
-        print(f"  Pire modèle: {worst_model[0]} (AUC: {worst_model[1]['roc_auc_mean']:.4f})")
+        # 4. Optimisation des hyperparamètres
+        optimized_results = trainer.hyperparameter_tuning(X_train, y_train, top_models=3)
         
-        # Distribution des performances
-        auc_scores = [r['roc_auc_mean'] for r in self.results.values()]
-        print(f"  AUC moyen: {np.mean(auc_scores):.4f}")
-        print(f"  Écart-type AUC: {np.std(auc_scores):.4f}")
+        # 5. Sélection du meilleur modèle
+        best_name, best_model, model_performances = trainer.select_best_model(
+            optimized_results, X_val, y_val
+        )
         
-        # Catégorisation des modèles
-        excellent = [name for name, r in self.results.items() if r['roc_auc_mean'] > 0.9]
-        good = [name for name, r in self.results.items() if 0.8 <= r['roc_auc_mean'] <= 0.9]
-        moderate = [name for name, r in self.results.items() if r['roc_auc_mean'] < 0.8]
+        # 6. Évaluation finale
+        final_results = trainer.final_evaluation(X_test, y_test, model_performances)
         
-        print(f"\n🎯 CATÉGORISATION DES PERFORMANCES:")
-        print(f"  Excellents (AUC > 0.9): {len(excellent)} modèles")
-        for model in excellent[:3]:  # Top 3
-            print(f"    - {model}")
+        # 7. Sauvegarde
+        model_path = trainer.save_best_model()
         
-        print(f"  Bons (0.8 ≤ AUC ≤ 0.9): {len(good)} modèles")
-        print(f"  Modérés (AUC < 0.8): {len(moderate)} modèles")
-        
-        # Recommandations
-        print(f"\n💡 RECOMMANDATIONS:")
-        if len(excellent) >= 3:
-            print("  ✅ Plusieurs modèles excellents - Utiliser un ensemble")
-        elif len(excellent) >= 1:
-            print("  👍 Au moins un modèle excellent identifié")
-        else:
-            print("  ⚠️ Performances limitées - Revoir les features ou la target")
-        
-        if best_model[1]['roc_auc_std'] > 0.05:
-            print("  ⚠️ Variance élevée - Augmenter les données ou la régularisation")
+        # 8. Résumé final
+        print(f"\n✅ ENTRAÎNEMENT TERMINÉ AVEC SUCCÈS!")
+        print(f"🏆 Meilleur modèle: {best_name}")
+        print(f"📊 Performance test:")
+        print(f"  Accuracy: {final_results['test_metrics']['accuracy']:.4f}")
+        print(f"  AUC-ROC: {final_results['test_metrics']['roc_auc']:.4f}")
+        print(f"  F1-Score: {final_results['test_metrics']['f1_score']:.4f}")
+        print(f"💾 Modèle sauvegardé: {model_path}")
+        print(f"🚀 Prochaine étape: python src/evaluation.py")
         
         return {
-            'n_models': n_models,
-            'best_model': best_model[0],
-            'best_score': best_model[1]['roc_auc_mean'],
-            'auc_scores': auc_scores
+            'trainer': trainer,
+            'best_model': best_model,
+            'best_name': best_name,
+            'final_results': final_results,
+            'model_path': model_path
         }
-
-# Utilisation dans le pipeline principal
-def run_advanced_modeling(X_train, y_train):
-    """Lance l'analyse complète avec modèles avancés"""
-    
-    # Initialiser
-    advanced_models = AdvancedCSGOModels()
-    
-    # Créer tous les modèles
-    advanced_models.create_base_models()
-    advanced_models.create_ensemble_models()
-    
-    # Évaluer
-    results = advanced_models.evaluate_all_models(X_train, y_train)
-    
-    # Analyser
-    ranking = advanced_models.get_model_ranking()
-    stats_results = advanced_models.perform_statistical_tests(X_train, y_train)
-    
-    # Créer méta-ensemble
-    meta_model = advanced_models.create_meta_ensemble(top_n=3)
-    
-    # Rapport final
-    report = advanced_models.generate_model_report()
-    
-    return {
-        'advanced_models': advanced_models,
-        'results': results,
-        'ranking': ranking,
-        'meta_ensemble': meta_model,
-        'report': report
-    }
+        
+    except Exception as e:
+        LOGGER.error(f"❌ Erreur pendant l'entraînement: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 if __name__ == "__main__":
-    print("🚀 Test des modèles avancés...")
+    main()

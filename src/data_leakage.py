@@ -3,6 +3,12 @@ Correction COMPLETE du data leakage pour le projet CS:GO
 École89 - 2025
 """
 
+import pandas as pd
+import numpy as np  # AJOUT MANQUANT
+from sklearn.model_selection import cross_val_score
+from sklearn.dummy import DummyClassifier
+from sklearn.ensemble import RandomForestClassifier
+
 def create_independent_target(df):
     """
     Crée une variable cible INDÉPENDANTE des features utilisées
