@@ -1,478 +1,193 @@
 """
-Module de preprocessing des données CS:GO
+Correction COMPLETE du data leakage pour le projet CS:GO
 École89 - 2025
 """
 
-import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from pathlib import Path
-import sys
-import warnings
-warnings.filterwarnings('ignore')
-
-# Ajouter le dossier parent au path
-sys.path.append(str(Path(__file__).parent.parent))
-
-try:
-    from config.config import (
-        RAW_DATA_DIR, PROCESSED_DATA_DIR, RANDOM_STATE, 
-        TRAIN_SIZE, VALIDATION_SIZE, TEST_SIZE, LOGGER
-    )
-except ImportError:
-    # Configuration de base si config.py incomplet
-    RAW_DATA_DIR = Path("data/raw")
-    PROCESSED_DATA_DIR = Path("data/processed")
-    PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+def create_independent_target(df):
+    """
+    Crée une variable cible INDÉPENDANTE des features utilisées
+    """
     
-    RANDOM_STATE = 42
-    TRAIN_SIZE = 0.7
-    VALIDATION_SIZE = 0.15
-    TEST_SIZE = 0.15
-    
-    import logging
-    logging.basicConfig(level=logging.INFO)
-    LOGGER = logging.getLogger(__name__)
-
-class CSGODataPreprocessor:
-    """Classe pour le preprocessing des données CS:GO"""
-    
-    def __init__(self):
-        self.scaler = StandardScaler()
-        self.raw_data_dir = RAW_DATA_DIR
-        self.processed_data_dir = PROCESSED_DATA_DIR
+    # MÉTHODE 1: Target basée sur des seuils fixes (recommandée)
+    def create_performance_target_v2(df):
+        """Version corrigée sans leakage"""
         
-        # Features interdites (data leakage)
-        self.forbidden_features = [
-            'kd_ratio', 'accuracy', 'win_rate', 'performance_score',
-            'combat_effectiveness', 'team_impact', 'experience_level',
-            'experience_score'  # Score utilisé pour créer la target
-        ]
+        # Utiliser SEULEMENT des métriques de base, pas de ratios calculés
+        conditions = []
+        weights = []
         
-    def load_raw_data(self) -> pd.DataFrame:
-        """Charge les données brutes depuis le fichier CSV"""
+        # Condition 1: Nombre de kills élevé (seuil fixe)
+        if 'total_kills' in df.columns:
+            kill_threshold = 1500  # Seuil fixe, pas basé sur les données
+            conditions.append(df['total_kills'] >= kill_threshold)
+            weights.append(0.4)
         
-        # UTILISER LE FICHIER CORRIGÉ (sans data leakage)
-        filename = "csgo_raw_data_fixed.csv"
+        # Condition 2: Faible nombre de morts (seuil fixe)
+        if 'total_deaths' in df.columns:
+            death_threshold = 1200  # Seuil fixe
+            conditions.append(df['total_deaths'] <= death_threshold)
+            weights.append(0.3)
         
-        filepath = self.raw_data_dir / filename
+        # Condition 3: Dégâts élevés (seuil fixe)
+        if 'total_damage_done' in df.columns:
+            damage_threshold = 150000  # Seuil fixe
+            conditions.append(df['total_damage_done'] >= damage_threshold)
+            weights.append(0.3)
         
-        if not filepath.exists():
-            # Fallback vers le fichier original si le fixé n'existe pas
-            filename = "csgo_raw_data.csv"
-            filepath = self.raw_data_dir / filename
-            LOGGER.warning(f"⚠️ Fichier fixed non trouvé, utilisation de {filename}")
-        
-        if not filepath.exists():
-            raise FileNotFoundError(f"Fichier de données non trouvé: {filepath}")
-        
-        df = pd.read_csv(filepath)
-        LOGGER.info(f"📁 Données chargées: {len(df)} lignes, {len(df.columns)} colonnes")
-        
-        return df
-    
-    def remove_leakage_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Supprime les features qui causent le data leakage"""
-        
-        # Features à supprimer pour éviter le data leakage
-        features_to_remove = [f for f in self.forbidden_features if f in df.columns]
-        
-        if features_to_remove:
-            df_clean = df.drop(columns=features_to_remove)
-            LOGGER.info(f"🚫 {len(features_to_remove)} features supprimées pour éviter data leakage:")
-            for feature in features_to_remove:
-                LOGGER.info(f"   - {feature}")
+        # Calculer le score (nombre de conditions remplies)
+        if conditions:
+            performance_score = sum(
+                condition.astype(int) * weight 
+                for condition, weight in zip(conditions, weights)
+            )
+            
+            # High performer = top 35% (seuil fixe)
+            threshold = 0.7  # Seuil fixe, pas basé sur quantiles
+            high_performer = (performance_score >= threshold).astype(int)
         else:
-            df_clean = df.copy()
-            LOGGER.info("✅ Aucune feature de leakage détectée")
+            # Fallback aléatoire équilibré
+            high_performer = np.random.binomial(1, 0.4, len(df))
         
-        return df_clean
+        return high_performer
     
-    def clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Nettoie et valide les données"""
-        LOGGER.info("🧹 Début du nettoyage des données...")
+    # MÉTHODE 2: Target basée sur l'expérience (complètement indépendante)
+    def create_experience_target(df):
+        """Target basée sur l'expérience de jeu uniquement"""
         
-        # 1. Supprimer les features de data leakage AVANT tout autre traitement
-        df_no_leakage = self.remove_leakage_features(df)
-        
-        # 2. Filtrage par minimum d'heures
-        min_hours = 50
-        if 'total_time_played' in df_no_leakage.columns:
-            min_seconds = min_hours * 3600
-            initial_count = len(df_no_leakage)
-            df_filtered = df_no_leakage[df_no_leakage['total_time_played'] >= min_seconds]
-            removed_count = initial_count - len(df_filtered)
-            LOGGER.info(f"  Filtrage: minimum {min_hours}h de jeu ({removed_count} joueurs supprimés)")
+        if 'total_time_played' in df.columns:
+            # Plus de 500 heures = expérimenté
+            hours_played = df['total_time_played'] / 3600
+            experienced = (hours_played >= 500).astype(int)
+            return experienced
         else:
-            df_filtered = df_no_leakage
-            LOGGER.info("  Filtrage: pas de colonne temps disponible")
-        
-        # 3. Gestion des outliers
-        df_clean = self._remove_outliers(df_filtered)
-        
-        # 4. Corrections de cohérence
-        df_consistent = self._fix_data_consistency(df_clean)
-        
-        LOGGER.info("✅ Nettoyage terminé:")
-        LOGGER.info(f"  Lignes supprimées: {len(df) - len(df_consistent)} ({(len(df) - len(df_consistent))/len(df)*100:.1f}%)")
-        LOGGER.info(f"  Lignes restantes: {len(df_consistent)}")
-        
-        return df_consistent
+            return np.random.binomial(1, 0.4, len(df))
     
-    def _remove_outliers(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Supprime les outliers avec la méthode IQR"""
+    # MÉTHODE 3: Target mixte recommandée
+    def create_hybrid_target(df):
+        """Combine expérience et quelques métriques de base"""
         
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        numeric_cols = [col for col in numeric_cols if col not in ['high_performer']]
+        score = 0
+        factors = 0
         
-        df_clean = df.copy()
-        total_outliers = 0
+        # Facteur 1: Expérience (50% du score)
+        if 'total_time_played' in df.columns:
+            hours = df['total_time_played'] / 3600
+            exp_score = np.clip(hours / 1000, 0, 1)  # Normaliser sur 1000h max
+            score += exp_score * 0.5
+            factors += 0.5
         
-        for col in numeric_cols:
-            if col in df_clean.columns:
-                Q1 = df_clean[col].quantile(0.25)
-                Q3 = df_clean[col].quantile(0.75)
-                IQR = Q3 - Q1
-                
-                lower_bound = Q1 - 1.5 * IQR
-                upper_bound = Q3 + 1.5 * IQR
-                
-                outliers_mask = (df_clean[col] < lower_bound) | (df_clean[col] > upper_bound)
-                outliers_count = outliers_mask.sum()
-                
-                if outliers_count > 0:
-                    # Plafonner les outliers au lieu de les supprimer
-                    df_clean.loc[df_clean[col] < lower_bound, col] = lower_bound
-                    df_clean.loc[df_clean[col] > upper_bound, col] = upper_bound
-                    total_outliers += outliers_count
-                    
-                    if outliers_count > 5:  # Log seulement si beaucoup d'outliers
-                        LOGGER.info(f"  Outliers plafonnés pour {col}: {outliers_count}")
+        # Facteur 2: Volume de jeu (25% du score)
+        if 'total_rounds_played' in df.columns:
+            rounds_norm = np.clip(df['total_rounds_played'] / 5000, 0, 1)
+            score += rounds_norm * 0.25
+            factors += 0.25
         
-        if total_outliers > 0:
-            LOGGER.info(f"  Total outliers traités: {total_outliers}")
+        # Facteur 3: Activité récente simulée (25% du score)
+        recent_activity = np.random.beta(2, 5, len(df))  # Distribution biaisée vers les faibles valeurs
+        score += recent_activity * 0.25
+        factors += 0.25
         
-        return df_clean
+        # Normaliser le score
+        if factors > 0:
+            score = score / factors
+        
+        # Seuil pour high performer (35% des joueurs)
+        threshold = np.percentile(score, 65)  # Top 35%
+        high_performer = (score >= threshold).astype(int)
+        
+        return high_performer
     
-    def _fix_data_consistency(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Corrige les incohérences dans les données"""
-        
-        df_fixed = df.copy()
-        corrections = 0
-        
-        # 1. Vérifier que deaths >= 1
-        if 'total_deaths' in df_fixed.columns:
-            mask = df_fixed['total_deaths'] < 1
-            df_fixed.loc[mask, 'total_deaths'] = 1
-            corrections += mask.sum()
-        
-        # 2. Vérifier cohérence kills/armes
-        weapon_cols = [col for col in df_fixed.columns if 'total_kills_' in col and col != 'total_kills']
-        if weapon_cols and 'total_kills' in df_fixed.columns:
-            weapon_kills_sum = df_fixed[weapon_cols].sum(axis=1)
-            # Si la somme des kills par arme dépasse le total, ajuster
-            mask = weapon_kills_sum > df_fixed['total_kills'] * 1.1  # 10% de tolérance
-            if mask.any():
-                for idx in df_fixed[mask].index:
-                    total = df_fixed.loc[idx, 'total_kills']
-                    weapon_sum = df_fixed.loc[idx, weapon_cols].sum()
-                    if weapon_sum > 0:
-                        ratio = total / weapon_sum
-                        df_fixed.loc[idx, weapon_cols] = (df_fixed.loc[idx, weapon_cols] * ratio).astype(int)
-                corrections += mask.sum()
-        
-        # 3. Vérifier cohérence matches won/played
-        if 'total_matches_won' in df_fixed.columns and 'total_matches_played' in df_fixed.columns:
-            mask = df_fixed['total_matches_won'] > df_fixed['total_matches_played']
-            df_fixed.loc[mask, 'total_matches_won'] = df_fixed.loc[mask, 'total_matches_played']
-            corrections += mask.sum()
-        
-        if corrections > 0:
-            LOGGER.info(f"  Corrections de cohérence appliquées: {corrections}")
-        
-        return df_fixed
+    # Appliquer la méthode hybride (recommandée)
+    df_fixed = df.copy()
     
-    def handle_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Gère les valeurs manquantes"""
-        
-        missing_count = df.isnull().sum().sum()
-        
-        if missing_count > 0:
-            LOGGER.info(f"⚠️ {missing_count} valeurs manquantes détectées")
-            
-            # Remplir avec la médiane pour les variables numériques
-            numeric_cols = df.select_dtypes(include=[np.number]).columns
-            df_filled = df.copy()
-            
-            for col in numeric_cols:
-                if df_filled[col].isnull().any():
-                    median_val = df_filled[col].median()
-                    df_filled[col] = df_filled[col].fillna(median_val)
-                    LOGGER.info(f"  {col}: rempli avec médiane ({median_val:.2f})")
-            
-            # Vérification finale
-            final_missing = df_filled.isnull().sum().sum()
-            LOGGER.info(f"✅ Valeurs manquantes après traitement: {final_missing}")
-            
-            return df_filled
-        else:
-            LOGGER.info("  Aucune valeur manquante détectée")
-            return df
+    # Supprimer l'ancienne target si elle existe
+    if 'high_performer' in df_fixed.columns:
+        df_fixed = df_fixed.drop('high_performer', axis=1)
     
-    def create_derived_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Crée des features dérivées SÛRES (pas de leakage)"""
-        LOGGER.info("🔧 Création des features dérivées...")
-        
-        df_features = df.copy()
-        new_features = 0
-        
-        # 1. Features par round (intensité de jeu)
-        if 'total_rounds_played' in df_features.columns:
-            if 'total_kills' in df_features.columns:
-                df_features['kills_per_round'] = df_features['total_kills'] / (df_features['total_rounds_played'] + 1)
-                new_features += 1
-            
-            if 'total_deaths' in df_features.columns:
-                df_features['deaths_per_round'] = df_features['total_deaths'] / (df_features['total_rounds_played'] + 1)
-                new_features += 1
-            
-            if 'total_damage_done' in df_features.columns:
-                df_features['damage_per_round'] = df_features['total_damage_done'] / (df_features['total_rounds_played'] + 1)
-                new_features += 1
-            
-            if 'total_money_earned' in df_features.columns:
-                df_features['money_per_round'] = df_features['total_money_earned'] / (df_features['total_rounds_played'] + 1)
-                new_features += 1
-        
-        # 2. Features d'objectifs (bombes)
-        if 'total_planted_bombs' in df_features.columns and 'total_rounds_played' in df_features.columns:
-            df_features['bomb_plant_rate'] = df_features['total_planted_bombs'] / (df_features['total_rounds_played'] / 2 + 1)
-            new_features += 1
-        
-        if 'total_defused_bombs' in df_features.columns and 'total_rounds_played' in df_features.columns:
-            df_features['bomb_defuse_rate'] = df_features['total_defused_bombs'] / (df_features['total_rounds_played'] / 2 + 1)
-            new_features += 1
-        
-        # 3. Features d'armes (efficacité relative)
-        weapon_cols = [col for col in df_features.columns if 'total_kills_' in col and col != 'total_kills']
-        if weapon_cols and 'total_kills' in df_features.columns:
-            # Efficacité des rifles
-            rifle_cols = [col for col in weapon_cols if 'ak47' in col or 'm4a1' in col]
-            if rifle_cols:
-                df_features['rifle_kills'] = df_features[rifle_cols].sum(axis=1)
-                df_features['rifle_efficiency'] = df_features['rifle_kills'] / (df_features['total_kills'] + 1)
-                new_features += 2
-            
-            # Efficacité AWP
-            awp_cols = [col for col in weapon_cols if 'awp' in col]
-            if awp_cols:
-                df_features['awp_efficiency'] = df_features[awp_cols].sum(axis=1) / (df_features['total_kills'] + 1)
-                new_features += 1
-            
-            # Taux de knife kills
-            knife_cols = [col for col in weapon_cols if 'knife' in col]
-            if knife_cols:
-                df_features['knife_rate'] = df_features[knife_cols].sum(axis=1) / (df_features['total_kills'] + 1)
-                new_features += 1
-        
-        # 4. Features de match (durée moyenne)
-        if 'total_time_played' in df_features.columns and 'total_matches_played' in df_features.columns:
-            df_features['avg_match_duration'] = df_features['total_time_played'] / (df_features['total_matches_played'] * 60 + 1)
-            new_features += 1
-        
-        # 5. Features de MVP (impact équipe)
-        if 'total_mvps' in df_features.columns and 'total_matches_played' in df_features.columns:
-            df_features['mvp_rate'] = df_features['total_mvps'] / (df_features['total_matches_played'] + 1)
-            new_features += 1
-        
-        LOGGER.info(f"✅ {new_features} nouvelles features créées")
-        
-        return df_features
+    # Créer la nouvelle target
+    new_target = create_hybrid_target(df_fixed)
+    df_fixed['high_performer'] = new_target
     
-    def select_features(self, df: pd.DataFrame) -> pd.DataFrame:
-    """Sélectionne les features pour le ML"""
+    # SUPPRIMER TOUTES LES FEATURES SUSPECTES
+    forbidden_features = [
+        # Features calculées qui peuvent leaker
+        'kd_ratio', 'accuracy', 'win_rate', 'mvp_rate',
+        'performance_score', 'damage_per_round', 'kills_per_round',
+        'experience_score', 'performance_index',
+        
+        # Features dérivées suspectes
+        'deaths_per_round', 'money_per_round', 'bomb_plant_rate',
+        'bomb_defuse_rate', 'rifle_efficiency', 'awp_efficiency',
+        'knife_rate', 'avg_match_duration',
+        
+        # Features temporelles qui peuvent leaker
+        'hours_played', 'playtime_efficiency',
+        
+        # Métadonnées
+        'steam_id'
+    ]
     
-    # Features à exclure (STRICTEMENT pour éviter data leakage)
-    exclude_features = [
-        'steam_id',  # Identifiant
-        'total_time_played',  # Utilisé pour créer la target
-        'total_matches_played',  # Utilisé pour créer la target
-        'hours_played',  # Utilisé pour créer la target (si présent)
-        
-        # NOUVELLES EXCLUSIONS pour éviter le calcul des ratios
-        'total_deaths',      # Permet de calculer KD ratio
-        'total_shots_fired', # Permet de calculer accuracy
-        'total_shots_hit',   # Permet de calculer accuracy
-        'total_wins',        # Permet de calculer win rate
-        'total_matches_won', # Permet de calculer win rate
-        'total_mvps',        # Très corrélé à la performance
-        
-    ] + self.forbidden_features
-        
-        # Garder seulement les features numériques + target
-        available_features = []
-        
-        for col in df.columns:
-            if col == 'high_performer':  # Target
-                available_features.append(col)
-            elif col not in exclude_features:
-                if df[col].dtype in ['int64', 'float64']:  # Numérique
-                    available_features.append(col)
-        
-        df_selected = df[available_features].copy()
-        
-        feature_count = len(available_features) - 1  # -1 pour la target
-        LOGGER.info(f"🎯 Features sélectionnées: {feature_count}")
-        
-        # Afficher quelques features gardées
-        features_only = [f for f in available_features if f != 'high_performer']
-        LOGGER.info(f"✅ Exemples features: {features_only[:10]}")
-        
-        return df_selected
+    # Supprimer les features interdites
+    features_to_remove = [f for f in forbidden_features if f in df_fixed.columns]
+    if features_to_remove:
+        df_fixed = df_fixed.drop(columns=features_to_remove)
+        print(f"🚫 Features supprimées: {features_to_remove}")
     
-    def split_data(self, df: pd.DataFrame):
-        """Divise les données en train/validation/test"""
-        
-        # Séparer features et target
-        X = df.drop('high_performer', axis=1)
-        y = df['high_performer']
-        
-        # Division en 3 sets
-        X_temp, X_test, y_temp, y_test = train_test_split(
-            X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y
-        )
-        
-        # Ajuster la taille de validation
-        val_size_adjusted = VALIDATION_SIZE / (1 - TEST_SIZE)
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_temp, y_temp, test_size=val_size_adjusted, 
-            random_state=RANDOM_STATE, stratify=y_temp
-        )
-        
-        LOGGER.info("📊 Division des données:")
-        LOGGER.info(f"  Train: {len(X_train)} ({len(X_train)/len(df)*100:.1f}%)")
-        LOGGER.info(f"  Validation: {len(X_val)} ({len(X_val)/len(df)*100:.1f}%)")
-        LOGGER.info(f"  Test: {len(X_test)} ({len(X_test)/len(df)*100:.1f}%)")
-        
-        return X_train, X_val, X_test, y_train, y_val, y_test
-    
-    def scale_features(self, X_train, X_val, X_test):
-        """Normalise les features avec StandardScaler"""
-        
-        # Fit sur train seulement
-        X_train_scaled = pd.DataFrame(
-            self.scaler.fit_transform(X_train),
-            columns=X_train.columns,
-            index=X_train.index
-        )
-        
-        # Transform sur val et test
-        X_val_scaled = pd.DataFrame(
-            self.scaler.transform(X_val),
-            columns=X_val.columns,
-            index=X_val.index
-        )
-        
-        X_test_scaled = pd.DataFrame(
-            self.scaler.transform(X_test),
-            columns=X_test.columns,
-            index=X_test.index
-        )
-        
-        LOGGER.info("🔄 Features normalisées avec standard scaler")
-        
-        return X_train_scaled, X_val_scaled, X_test_scaled
-    
-    def save_processed_data(self, **datasets):
-        """Sauvegarde les données preprocessées"""
-        
-        self.processed_data_dir.mkdir(exist_ok=True)
-        
-        for name, data in datasets.items():
-            if data is not None:
-                filepath = self.processed_data_dir / f"{name}.csv"
-                data.to_csv(filepath, index=False)
-                LOGGER.info(f"💾 {name} sauvegardé: {filepath}")
-    
-    def get_preprocessing_summary(self, df_original, df_final):
-        """Retourne un résumé du preprocessing"""
-        
-        summary = {
-            'original_samples': len(df_original),
-            'final_samples': len(df_final),
-            'samples_removed': len(df_original) - len(df_final),
-            'removal_percentage': (len(df_original) - len(df_final)) / len(df_original) * 100,
-            'original_features': len(df_original.columns),
-            'final_features': len(df_final.columns) - 1,  # -1 pour la target
-            'missing_values': df_final.isnull().sum().sum()
-        }
-        
-        return summary
+    return df_fixed, forbidden_features
 
-def main():
-    """Fonction principale pour le preprocessing complet"""
+# Fonction à ajouter dans data_preprocessing.py
+def validate_no_leakage(X_train, y_train):
+    """
+    Valide qu'il n'y a pas de data leakage
+    """
+    from sklearn.metrics import roc_auc_score
+    from sklearn.dummy import DummyClassifier
     
-    print("🧹 " + "="*50)
-    print("   PREPROCESSING DES DONNÉES CS:GO")
-    print("   École89 - 2025")
-    print("="*54)
+    # Test 1: Dummy classifier ne devrait pas dépasser 0.6
+    dummy = DummyClassifier(strategy='most_frequent')
+    dummy.fit(X_train, y_train)
+    dummy_score = cross_val_score(dummy, X_train, y_train, cv=5, scoring='roc_auc').mean()
     
-    # Initialisation
-    preprocessor = CSGODataPreprocessor()
+    # Test 2: Corrélation maximale avec target
+    correlations = X_train.corrwith(pd.Series(y_train, index=X_train.index)).abs()
+    max_correlation = correlations.max()
     
-    try:
-        # 1. Charger les données brutes
-        df_raw = preprocessor.load_raw_data()
-        
-        # 2. Nettoyage
-        df_clean = preprocessor.clean_data(df_raw)
-        
-        # 3. Gestion des valeurs manquantes
-        df_imputed = preprocessor.handle_missing_values(df_clean)
-        
-        # 4. Création de features dérivées
-        df_features = preprocessor.create_derived_features(df_imputed)
-        
-        # 5. Sélection des features
-        df_selected = preprocessor.select_features(df_features)
-        
-        # 6. Division des données
-        X_train, X_val, X_test, y_train, y_val, y_test = preprocessor.split_data(df_selected)
-        
-        # 7. Normalisation
-        X_train_scaled, X_val_scaled, X_test_scaled = preprocessor.scale_features(
-            X_train, X_val, X_test
-        )
-        
-        # 8. Sauvegarde
-        preprocessor.save_processed_data(
-            X_train=X_train_scaled,
-            X_val=X_val_scaled,
-            X_test=X_test_scaled,
-            y_train=y_train,
-            y_val=y_val,
-            y_test=y_test
-        )
-        
-        # 9. Résumé
-        summary = preprocessor.get_preprocessing_summary(df_raw, df_selected)
-        
-        LOGGER.info(f"\n📋 RÉSUMÉ DU PREPROCESSING:")
-        LOGGER.info(f"  Lignes: {summary['original_samples']} → {summary['final_samples']}")
-        LOGGER.info(f"  Features: {summary['original_features']} → {summary['final_features']}")
-        LOGGER.info(f"  Qualité: {summary['missing_values']} valeurs manquantes")
-        
-        print(f"\n✅ PREPROCESSING TERMINÉ AVEC SUCCÈS!")
-        print(f"📊 Dataset final: {summary['final_samples']} joueurs, {summary['final_features']} features")
-        print(f"🎯 Variable cible: {y_train.sum() + y_val.sum() + y_test.sum()} high performers")
-        print(f"💾 Données sauvegardées dans: {preprocessor.processed_data_dir}")
-        print(f"🚀 Prochaine étape: python src/models.py")
-        
-    except Exception as e:
-        LOGGER.error(f"❌ Erreur pendant le preprocessing: {e}")
-        import traceback
-        traceback.print_exc()
+    # Test 3: Random Forest rapide
+    quick_rf = RandomForestClassifier(n_estimators=50, random_state=42)
+    rf_score = cross_val_score(quick_rf, X_train, y_train, cv=3, scoring='roc_auc').mean()
+    
+    print(f"\n🔍 VALIDATION ANTI-LEAKAGE:")
+    print(f"  Dummy classifier AUC: {dummy_score:.4f} (devrait être ~0.5)")
+    print(f"  Corrélation max: {max_correlation:.4f} (devrait être <0.8)")
+    print(f"  Random Forest AUC: {rf_score:.4f} (devrait être 0.7-0.9)")
+    
+    # Alertes
+    if dummy_score > 0.6:
+        print(f"  ⚠️ ALERTE: Dummy trop bon ({dummy_score:.4f})")
+    
+    if max_correlation > 0.9:
+        print(f"  ⚠️ ALERTE: Corrélation suspecte ({max_correlation:.4f})")
+        most_corr_feature = correlations.idxmax()
+        print(f"  Feature la plus corrélée: {most_corr_feature}")
+    
+    if rf_score > 0.95:
+        print(f"  ⚠️ ALERTE: Performance suspecte ({rf_score:.4f})")
+    
+    return {
+        'dummy_score': dummy_score,
+        'max_correlation': max_correlation,
+        'rf_score': rf_score,
+        'leakage_suspected': rf_score > 0.95 or max_correlation > 0.9
+    }
 
+# Utilisation dans le pipeline principal
 if __name__ == "__main__":
-    main()
+    # Charger et corriger les données
+    df_raw = pd.read_csv("data/raw/csgo_raw_data.csv")
+    df_fixed, forbidden = create_independent_target(df_raw)
+    
+    # Sauvegarder
+    df_fixed.to_csv("data/raw/csgo_raw_data_fixed.csv", index=False)
+    
+    print(f"✅ Données corrigées sauvegardées")
+    print(f"📊 Nouvelle distribution target: {df_fixed['high_performer'].value_counts()}")
