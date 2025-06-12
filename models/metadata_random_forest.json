@@ -1,0 +1,6 @@
+{
+  "model_name": "random_forest",
+  "model_type": "RandomForestClassifier",
+  "features_count": 31,
+  "training_date": "2025-06-12T13:38:23.876777"
+}

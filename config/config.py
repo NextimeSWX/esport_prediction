@@ -39,7 +39,7 @@ PRIMARY_METRIC = 'roc_auc'
 # CONFIGURATION API STEAM (OPTIONNELLE)
 # ============================================================================
 
-STEAM_API_KEY = "8BEA4284282F68ACC51FE0BFBD23D00E"  # Remplacez par votre clé
+STEAM_API_KEY = "8BEA4284282F68ACC51FE0BFBD23D00E"
 STEAM_BASE_URL = "https://api.steampowered.com"
 CSGO_APP_ID = 730
 
